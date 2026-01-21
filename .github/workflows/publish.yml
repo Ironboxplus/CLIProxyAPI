@@ -2,8 +2,19 @@ name: Build and Publish
 
 on:
   push:
+    branches: [main]
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'Target platforms to build'
+        required: true
+        default: 'linux/amd64'
+        type: choice
+        options:
+          - 'linux/amd64'
+          - 'linux/arm64'
+          - 'linux/amd64,linux/arm64'
 
 permissions:
   contents: read
@@ -21,6 +32,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up QEMU
+        if: contains(github.event.inputs.platforms || 'linux/amd64', 'arm64')
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
@@ -49,12 +61,22 @@ jobs:
             type=sha
             type=raw,value=latest
 
+      - name: Determine platforms
+        id: platforms
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "platforms=${{ github.event.inputs.platforms }}" >> $GITHUB_OUTPUT
+          else
+            # Default to amd64 only for push events (faster builds)
+            echo "platforms=linux/amd64" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ steps.platforms.outputs.platforms }}
           build-args: |
             VERSION=${{ env.VERSION }}
             COMMIT=${{ env.COMMIT }}
