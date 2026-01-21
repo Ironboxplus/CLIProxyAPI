@@ -172,18 +172,39 @@ func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (ava
 			}
 		}
 		if reason == blockReasonSkipCount {
+			cooldownCount++
+			// Decrement SkipCount and log the change
+			prevSkip := getModelSkipCount(candidate, model)
 			decrementModelSkipCount(candidate, model)
-			// Log warning about skipped auth due to rate limit backoff
+			newSkip := getModelSkipCount(candidate, model)
 			authLabel := candidate.Label
 			if authLabel == "" {
 				authLabel = candidate.ID
 			}
-			remainingSkips := getModelSkipCount(candidate, model)
-			log.Warnf("skipping auth due to rate limit backoff: auth=%s model=%s remainingSkips=%d",
-				authLabel, model, remainingSkips)
+			log.Warnf("skipping auth: auth=%s model=%s skipCount=%d->%d",
+				authLabel, model, prevSkip, newSkip)
 		}
 	}
 	return available, cooldownCount, earliest
+}
+
+// decrementSkipCountOnSelect decrements the SkipCount for the selected auth.
+// This should be called ONLY when an auth is actually selected for use.
+func decrementSkipCountOnSelect(auth *Auth, model string) {
+	if auth == nil {
+		return
+	}
+	prevSkip := getModelSkipCount(auth, model)
+	if prevSkip > 0 {
+		decrementModelSkipCount(auth, model)
+		newSkip := getModelSkipCount(auth, model)
+		authLabel := auth.Label
+		if authLabel == "" {
+			authLabel = auth.ID
+		}
+		log.Warnf("auth selected with backoff: auth=%s model=%s skipCount=%d->%d",
+			authLabel, model, prevSkip, newSkip)
+	}
 }
 
 func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
@@ -212,9 +233,11 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]
 			if authLabel == "" {
 				authLabel = leastSkipAuth.ID
 			}
-			log.Warnf("all auths in backoff, using least-skip auth: auth=%s model=%s skipCount=%d",
-				authLabel, model, minSkip)
+			prevSkip := getModelSkipCount(leastSkipAuth, model)
 			decrementModelSkipCount(leastSkipAuth, model)
+			newSkip := getModelSkipCount(leastSkipAuth, model)
+			log.Warnf("all auths in backoff, using least-skip auth: auth=%s model=%s skipCount=%d->%d",
+				authLabel, model, prevSkip, newSkip)
 			return []*Auth{leastSkipAuth}, nil
 		}
 

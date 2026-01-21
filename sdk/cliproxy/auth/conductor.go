@@ -1350,6 +1350,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					shouldSuspendModel = true
 				case 429:
 					prevSkipCount := state.Quota.SkipCount
+					prevSkipIncrement := state.Quota.SkipIncrement
 					backoffLevel := state.Quota.BackoffLevel
 
 					// Determine quota type based on retry delay
@@ -1363,6 +1364,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 
 					var next time.Time
 					var newSkipCount int
+					var newSkipIncrement int
 
 					if quotaType == QuotaTypeExhausted {
 						// Quota exhausted: set recovery date, don't use SkipCount
@@ -1373,15 +1375,17 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						}
 						next = recoveryDate
 						newSkipCount = 0
+						newSkipIncrement = 0
 					} else {
-						// Temporary rate limit: use exponential backoff SkipCount
-						if prevSkipCount == 0 {
-							newSkipCount = 1
-						} else {
-							newSkipCount = prevSkipCount * 2
-							if newSkipCount > 1024 {
-								newSkipCount = 1024 // Cap to prevent overflow
-							}
+						// Temporary rate limit: use exponential backoff with SkipIncrement
+						increment := prevSkipIncrement
+						if increment == 0 {
+							increment = 1 // Backward compatibility: treat 0 as 1
+						}
+						newSkipCount = prevSkipCount + increment
+						newSkipIncrement = increment * 2
+						if newSkipIncrement > 16 {
+							newSkipIncrement = 16 // Cap to prevent overflow
 						}
 
 						if result.RetryAfter != nil {
@@ -1402,6 +1406,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						NextRecoverAt: next,
 						BackoffLevel:  backoffLevel,
 						SkipCount:     newSkipCount,
+						SkipIncrement: newSkipIncrement,
 						QuotaType:     quotaType,
 						RecoveryDate:  recoveryDate,
 					}
@@ -1411,8 +1416,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					if quotaType == QuotaTypeExhausted {
 						quotaTypeStr = "exhausted"
 					}
-					log.Warnf("rate limit 429: auth=%s model=%s skipCount=%d->%d quotaType=%s recoveryDate=%v",
-						auth.Label, result.Model, prevSkipCount, newSkipCount, quotaTypeStr, recoveryDate)
+					log.Warnf("rate limit 429: auth=%s model=%s skipCount=%d->%d skipIncrement=%d->%d quotaType=%s",
+						auth.Label, result.Model, prevSkipCount, newSkipCount, prevSkipIncrement, newSkipIncrement, quotaTypeStr)
 
 					suspendReason = "quota"
 					shouldSuspendModel = true
@@ -1572,6 +1577,7 @@ func clearAuthStateOnSuccess(auth *Auth, now time.Time) {
 	auth.Quota.NextRecoverAt = time.Time{}
 	auth.Quota.BackoffLevel = 0
 	auth.Quota.SkipCount = 0
+	auth.Quota.SkipIncrement = 0
 	auth.Quota.QuotaType = QuotaTypeUnknown
 	auth.Quota.RecoveryDate = time.Time{}
 	auth.LastError = nil
@@ -1661,6 +1667,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.Quota.Reason = "quota"
 
 		prevSkipCount := auth.Quota.SkipCount
+		prevSkipIncrement := auth.Quota.SkipIncrement
 		backoffLevel := auth.Quota.BackoffLevel
 
 		// Determine quota type based on retry delay
@@ -1674,6 +1681,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 
 		var next time.Time
 		var newSkipCount int
+		var newSkipIncrement int
 
 		if quotaType == QuotaTypeExhausted {
 			// Quota exhausted: set recovery date, don't use SkipCount
@@ -1684,15 +1692,17 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			}
 			next = recoveryDate
 			newSkipCount = 0
+			newSkipIncrement = 0
 		} else {
 			// Temporary rate limit: use exponential backoff SkipCount
-			if prevSkipCount == 0 {
-				newSkipCount = 1
-			} else {
-				newSkipCount = prevSkipCount * 2
-				if newSkipCount > 1024 {
-					newSkipCount = 1024 // Cap to prevent overflow
-				}
+			increment := prevSkipIncrement
+			if increment == 0 {
+				increment = 1
+			}
+			newSkipCount = prevSkipCount + increment
+			newSkipIncrement = increment * 2
+			if newSkipIncrement > 16 {
+				newSkipIncrement = 16 // Cap to prevent overflow
 			}
 
 			if retryAfter != nil {
@@ -1709,6 +1719,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.Quota.NextRecoverAt = next
 		auth.Quota.BackoffLevel = backoffLevel
 		auth.Quota.SkipCount = newSkipCount
+		auth.Quota.SkipIncrement = newSkipIncrement
 		auth.Quota.QuotaType = quotaType
 		auth.Quota.RecoveryDate = recoveryDate
 		auth.NextRetryAfter = next
@@ -1718,8 +1729,8 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		if quotaType == QuotaTypeExhausted {
 			quotaTypeStr = "exhausted"
 		}
-		log.Warnf("rate limit 429: auth=%s model=(auth-level) skipCount=%d->%d quotaType=%s recoveryDate=%v",
-			auth.Label, prevSkipCount, newSkipCount, quotaTypeStr, recoveryDate)
+		log.Warnf("rate limit 429: auth=%s model=(auth-level) skipCount=%d->%d skipIncrement=%d->%d quotaType=%s",
+			auth.Label, prevSkipCount, newSkipCount, prevSkipIncrement, newSkipIncrement, quotaTypeStr)
 
 	case 408, 500, 502, 503, 504:
 		auth.StatusMessage = "transient upstream error"

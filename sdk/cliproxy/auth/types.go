@@ -86,8 +86,12 @@ type QuotaState struct {
 	BackoffLevel int `json:"backoff_level,omitempty"`
 	// SkipCount tracks the number of polling cycles to skip before retrying.
 	// When > 0, the credential is skipped during selection and SkipCount is decremented.
-	// On 429 error: if SkipCount == 0, set to 1; otherwise SkipCount *= 2.
 	SkipCount int `json:"skip_count,omitempty"`
+	// SkipIncrement stores the next increment value for exponential backoff.
+	// On 429: SkipCount += SkipIncrement, then SkipIncrement *= 2.
+	// On success: both SkipCount and SkipIncrement are reset to 0.
+	// Default 0 is treated as 1 for backward compatibility.
+	SkipIncrement int `json:"skip_increment,omitempty"`
 	// QuotaType indicates whether this is a temporary rate limit or quota exhaustion.
 	QuotaType QuotaType `json:"quota_type,omitempty"`
 	// RecoveryDate is when the quota is expected to recover (for quota exhaustion).
