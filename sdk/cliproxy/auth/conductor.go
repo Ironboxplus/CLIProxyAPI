@@ -1349,23 +1349,61 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					suspendReason = "not_found"
 					shouldSuspendModel = true
 				case 429:
-					var next time.Time
+					prevSkipCount := state.Quota.SkipCount
 					backoffLevel := state.Quota.BackoffLevel
-					if result.RetryAfter != nil {
-						next = now.Add(*result.RetryAfter)
-					} else {
-						cooldown, nextLevel := nextQuotaCooldown(backoffLevel)
-						if cooldown > 0 {
-							next = now.Add(cooldown)
-						}
-						backoffLevel = nextLevel
+
+					// Determine quota type based on retry delay
+					quotaType := QuotaTypeRateLimit // Default to temporary rate limit
+					var recoveryDate time.Time
+
+					// If retry delay is longer than 5 minutes, treat as quota exhausted
+					if result.RetryAfter != nil && *result.RetryAfter > 5*time.Minute {
+						quotaType = QuotaTypeExhausted
 					}
+
+					var next time.Time
+					var newSkipCount int
+
+					if quotaType == QuotaTypeExhausted {
+						// Quota exhausted: set recovery date, don't use SkipCount
+						if result.RetryAfter != nil {
+							recoveryDate = now.Add(*result.RetryAfter)
+						} else {
+							recoveryDate = now.Add(1 * time.Hour) // Default 1 hour
+						}
+						next = recoveryDate
+						newSkipCount = 0
+					} else {
+						// Temporary rate limit: use exponential backoff SkipCount
+						if prevSkipCount == 0 {
+							newSkipCount = 1
+						} else {
+							newSkipCount = prevSkipCount * 2
+							if newSkipCount > 1024 {
+								newSkipCount = 1024 // Cap to prevent overflow
+							}
+						}
+
+						if result.RetryAfter != nil {
+							next = now.Add(*result.RetryAfter)
+						} else {
+							cooldown, nextLevel := nextQuotaCooldown(backoffLevel)
+							if cooldown > 0 {
+								next = now.Add(cooldown)
+							}
+							backoffLevel = nextLevel
+						}
+					}
+
 					state.NextRetryAfter = next
 					state.Quota = QuotaState{
 						Exceeded:      true,
 						Reason:        "quota",
 						NextRecoverAt: next,
 						BackoffLevel:  backoffLevel,
+						SkipCount:     newSkipCount,
+						QuotaType:     quotaType,
+						RecoveryDate:  recoveryDate,
 					}
 					suspendReason = "quota"
 					shouldSuspendModel = true
@@ -1524,6 +1562,9 @@ func clearAuthStateOnSuccess(auth *Auth, now time.Time) {
 	auth.Quota.Reason = ""
 	auth.Quota.NextRecoverAt = time.Time{}
 	auth.Quota.BackoffLevel = 0
+	auth.Quota.SkipCount = 0
+	auth.Quota.QuotaType = QuotaTypeUnknown
+	auth.Quota.RecoveryDate = time.Time{}
 	auth.LastError = nil
 	auth.NextRetryAfter = time.Time{}
 	auth.UpdatedAt = now
@@ -1609,17 +1650,58 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.StatusMessage = "quota exhausted"
 		auth.Quota.Exceeded = true
 		auth.Quota.Reason = "quota"
-		var next time.Time
-		if retryAfter != nil {
-			next = now.Add(*retryAfter)
-		} else {
-			cooldown, nextLevel := nextQuotaCooldown(auth.Quota.BackoffLevel)
-			if cooldown > 0 {
-				next = now.Add(cooldown)
-			}
-			auth.Quota.BackoffLevel = nextLevel
+
+		prevSkipCount := auth.Quota.SkipCount
+		backoffLevel := auth.Quota.BackoffLevel
+
+		// Determine quota type based on retry delay
+		quotaType := QuotaTypeRateLimit // Default to temporary rate limit
+		var recoveryDate time.Time
+
+		// If retry delay is longer than 5 minutes, treat as quota exhausted
+		if retryAfter != nil && *retryAfter > 5*time.Minute {
+			quotaType = QuotaTypeExhausted
 		}
+
+		var next time.Time
+		var newSkipCount int
+
+		if quotaType == QuotaTypeExhausted {
+			// Quota exhausted: set recovery date, don't use SkipCount
+			if retryAfter != nil {
+				recoveryDate = now.Add(*retryAfter)
+			} else {
+				recoveryDate = now.Add(1 * time.Hour) // Default 1 hour
+			}
+			next = recoveryDate
+			newSkipCount = 0
+		} else {
+			// Temporary rate limit: use exponential backoff SkipCount
+			if prevSkipCount == 0 {
+				newSkipCount = 1
+			} else {
+				newSkipCount = prevSkipCount * 2
+				if newSkipCount > 1024 {
+					newSkipCount = 1024 // Cap to prevent overflow
+				}
+			}
+
+			if retryAfter != nil {
+				next = now.Add(*retryAfter)
+			} else {
+				cooldown, nextLevel := nextQuotaCooldown(backoffLevel)
+				if cooldown > 0 {
+					next = now.Add(cooldown)
+				}
+				backoffLevel = nextLevel
+			}
+		}
+
 		auth.Quota.NextRecoverAt = next
+		auth.Quota.BackoffLevel = backoffLevel
+		auth.Quota.SkipCount = newSkipCount
+		auth.Quota.QuotaType = quotaType
+		auth.Quota.RecoveryDate = recoveryDate
 		auth.NextRetryAfter = next
 	case 408, 500, 502, 503, 504:
 		auth.StatusMessage = "transient upstream error"
