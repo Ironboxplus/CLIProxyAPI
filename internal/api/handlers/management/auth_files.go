@@ -436,6 +436,26 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if claims := extractCodexIDTokenClaims(auth); claims != nil {
 		entry["id_token"] = claims
 	}
+	// Add quota information
+	if auth.Quota.SkipCount > 0 {
+		entry["skip_count"] = auth.Quota.SkipCount
+	}
+	if auth.Quota.QuotaType != 0 {
+		quotaTypeStr := "unknown"
+		switch auth.Quota.QuotaType {
+		case coreauth.QuotaTypeRateLimit:
+			quotaTypeStr = "rate_limit"
+		case coreauth.QuotaTypeExhausted:
+			quotaTypeStr = "exhausted"
+		}
+		entry["quota_type"] = quotaTypeStr
+	}
+	if !auth.Quota.RecoveryDate.IsZero() {
+		entry["recovery_date"] = auth.Quota.RecoveryDate
+	}
+	if auth.Quota.Exceeded {
+		entry["quota_exceeded"] = true
+	}
 	return entry
 }
 
