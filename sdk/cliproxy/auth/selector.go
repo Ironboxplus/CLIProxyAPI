@@ -13,6 +13,7 @@ import (
 	"time"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 )
 
 // RoundRobinSelector provides a simple provider scoped round-robin selection strategy.
@@ -140,6 +141,20 @@ func decrementModelSkipCount(auth *Auth, model string) {
 	}
 }
 
+// getModelSkipCount returns the current skip count for the specified model.
+// Returns the model-specific skip count if available, otherwise the auth-level skip count.
+func getModelSkipCount(auth *Auth, model string) int {
+	if auth == nil {
+		return 0
+	}
+	if model != "" && auth.ModelStates != nil {
+		if state, ok := auth.ModelStates[model]; ok && state != nil {
+			return state.Quota.SkipCount
+		}
+	}
+	return auth.Quota.SkipCount
+}
+
 func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (available map[int][]*Auth, cooldownCount int, earliest time.Time) {
 	available = make(map[int][]*Auth)
 	for i := 0; i < len(auths); i++ {
@@ -158,6 +173,14 @@ func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (ava
 		}
 		if reason == blockReasonSkipCount {
 			decrementModelSkipCount(candidate, model)
+			// Log warning about skipped auth due to rate limit backoff
+			authLabel := candidate.Label
+			if authLabel == "" {
+				authLabel = candidate.ID
+			}
+			remainingSkips := getModelSkipCount(candidate, model)
+			log.Warnf("skipping auth due to rate limit backoff: auth=%s model=%s remainingSkips=%d",
+				authLabel, model, remainingSkips)
 		}
 	}
 	return available, cooldownCount, earliest
@@ -170,6 +193,31 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]
 
 	availableByPriority, cooldownCount, earliest := collectAvailableByPriority(auths, model, now)
 	if len(availableByPriority) == 0 {
+		// Fallback: when all auths are in backoff, select the one with minimum SkipCount
+		// This prevents complete service denial when the auth pool is unhealthy
+		var leastSkipAuth *Auth
+		minSkip := int(^uint(0) >> 1) // MaxInt
+		for _, auth := range auths {
+			if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
+				continue
+			}
+			skipCount := getModelSkipCount(auth, model)
+			if skipCount > 0 && skipCount < minSkip {
+				minSkip = skipCount
+				leastSkipAuth = auth
+			}
+		}
+		if leastSkipAuth != nil {
+			authLabel := leastSkipAuth.Label
+			if authLabel == "" {
+				authLabel = leastSkipAuth.ID
+			}
+			log.Warnf("all auths in backoff, using least-skip auth: auth=%s model=%s skipCount=%d",
+				authLabel, model, minSkip)
+			decrementModelSkipCount(leastSkipAuth, model)
+			return []*Auth{leastSkipAuth}, nil
+		}
+
 		if cooldownCount == len(auths) && !earliest.IsZero() {
 			providerForError := provider
 			if providerForError == "mixed" {

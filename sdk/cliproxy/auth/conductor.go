@@ -1,4 +1,4 @@
-package auth
+﻿package auth
 
 import (
 	"bytes"
@@ -1405,6 +1405,15 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						QuotaType:     quotaType,
 						RecoveryDate:  recoveryDate,
 					}
+
+					// Log 429 rate limit for model-level
+					quotaTypeStr := "rate_limit"
+					if quotaType == QuotaTypeExhausted {
+						quotaTypeStr = "exhausted"
+					}
+					log.Warnf("rate limit 429: auth=%s model=%s skipCount=%d->%d quotaType=%s recoveryDate=%v",
+						auth.Label, result.Model, prevSkipCount, newSkipCount, quotaTypeStr, recoveryDate)
+
 					suspendReason = "quota"
 					shouldSuspendModel = true
 					setModelQuota = true
@@ -1703,6 +1712,15 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.Quota.QuotaType = quotaType
 		auth.Quota.RecoveryDate = recoveryDate
 		auth.NextRetryAfter = next
+
+		// Log 429 rate limit for auth-level
+		quotaTypeStr := "rate_limit"
+		if quotaType == QuotaTypeExhausted {
+			quotaTypeStr = "exhausted"
+		}
+		log.Warnf("rate limit 429: auth=%s model=(auth-level) skipCount=%d->%d quotaType=%s recoveryDate=%v",
+			auth.Label, prevSkipCount, newSkipCount, quotaTypeStr, recoveryDate)
+
 	case 408, 500, 502, 503, 504:
 		auth.StatusMessage = "transient upstream error"
 		auth.NextRetryAfter = now.Add(1 * time.Minute)
