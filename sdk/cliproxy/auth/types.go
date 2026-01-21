@@ -65,6 +65,15 @@ type Auth struct {
 	indexAssigned bool `json:"-"`
 }
 
+// QuotaType indicates the type of rate limiting.
+type QuotaType int
+
+const (
+	QuotaTypeUnknown   QuotaType = iota // Unknown type
+	QuotaTypeRateLimit                  // Temporary rate limit - use SkipCount
+	QuotaTypeExhausted                  // Quota exhausted - use RecoveryDate
+)
+
 // QuotaState contains limiter tracking data for a credential.
 type QuotaState struct {
 	// Exceeded indicates the credential recently hit a quota error.
@@ -75,6 +84,14 @@ type QuotaState struct {
 	NextRecoverAt time.Time `json:"next_recover_at"`
 	// BackoffLevel stores the progressive cooldown exponent used for rate limits.
 	BackoffLevel int `json:"backoff_level,omitempty"`
+	// SkipCount tracks the number of polling cycles to skip before retrying.
+	// When > 0, the credential is skipped during selection and SkipCount is decremented.
+	// On 429 error: if SkipCount == 0, set to 1; otherwise SkipCount *= 2.
+	SkipCount int `json:"skip_count,omitempty"`
+	// QuotaType indicates whether this is a temporary rate limit or quota exhaustion.
+	QuotaType QuotaType `json:"quota_type,omitempty"`
+	// RecoveryDate is when the quota is expected to recover (for quota exhaustion).
+	RecoveryDate time.Time `json:"recovery_date,omitempty"`
 }
 
 // ModelState captures the execution state for a specific model under an auth entry.
