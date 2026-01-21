@@ -440,6 +440,9 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if auth.Quota.SkipCount > 0 {
 		entry["skip_count"] = auth.Quota.SkipCount
 	}
+	if auth.Quota.SkipIncrement > 0 {
+		entry["skip_increment"] = auth.Quota.SkipIncrement
+	}
 	if auth.Quota.QuotaType != 0 {
 		quotaTypeStr := "unknown"
 		switch auth.Quota.QuotaType {
@@ -689,6 +692,69 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 	}
 	h.disableAuth(ctx, full)
 	c.JSON(200, gin.H{"status": "ok"})
+}
+
+// ResetAuthSkip resets the SkipCount and SkipIncrement for a specified auth entry.
+// It accepts "name" as a query parameter which can be either the auth ID or file name.
+func (h *Handler) ResetAuthSkip(c *gin.Context) {
+	if h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		return
+	}
+
+	name := c.Query("name")
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+
+	// Find auth by ID or file name
+	var targetAuth *coreauth.Auth
+	auths := h.authManager.List()
+	for _, auth := range auths {
+		if auth.ID == name || auth.FileName == name {
+			targetAuth = auth
+			break
+		}
+	}
+
+	if targetAuth == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "auth not found"})
+		return
+	}
+
+	// Store previous values for response
+	prevSkipCount := targetAuth.Quota.SkipCount
+	prevSkipIncrement := targetAuth.Quota.SkipIncrement
+	prevBackoffLevel := targetAuth.Quota.BackoffLevel
+
+	// Reset skip values
+	targetAuth.Quota.SkipCount = 0
+	targetAuth.Quota.SkipIncrement = 0
+	targetAuth.Quota.BackoffLevel = 0
+
+	// Update the auth entry
+	ctx := c.Request.Context()
+	if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "ok",
+		"id":     targetAuth.ID,
+		"name":   targetAuth.FileName,
+		"previous": gin.H{
+			"skip_count":     prevSkipCount,
+			"skip_increment": prevSkipIncrement,
+			"backoff_level":  prevBackoffLevel,
+		},
+		"current": gin.H{
+			"skip_count":     0,
+			"skip_increment": 0,
+			"backoff_level":  0,
+		},
+	})
 }
 
 func (h *Handler) authIDForPath(path string) string {
