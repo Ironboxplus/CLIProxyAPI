@@ -32,6 +32,7 @@ const (
 	blockReasonNone blockReason = iota
 	blockReasonCooldown
 	blockReasonDisabled
+	blockReasonSkipCount
 	blockReasonOther
 )
 
@@ -119,6 +120,26 @@ func authPriority(auth *Auth) int {
 	return parsed
 }
 
+// decrementModelSkipCount reduces the skip count by 1 for the specified model.
+// Should be called when an auth is skipped during selection due to SkipCount > 0.
+func decrementModelSkipCount(auth *Auth, model string) {
+	if auth == nil {
+		return
+	}
+	if model != "" && auth.ModelStates != nil {
+		if state, ok := auth.ModelStates[model]; ok && state != nil {
+			if state.Quota.SkipCount > 0 {
+				state.Quota.SkipCount--
+			}
+			return
+		}
+	}
+	// Fall back to auth-level skip count
+	if auth.Quota.SkipCount > 0 {
+		auth.Quota.SkipCount--
+	}
+}
+
 func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (available map[int][]*Auth, cooldownCount int, earliest time.Time) {
 	available = make(map[int][]*Auth)
 	for i := 0; i < len(auths); i++ {
@@ -134,6 +155,9 @@ func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (ava
 			if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
 				earliest = next
 			}
+		}
+		if reason == blockReasonSkipCount {
+			decrementModelSkipCount(candidate, model)
 		}
 	}
 	return available, cooldownCount, earliest
@@ -227,6 +251,14 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 				if state.Status == StatusDisabled {
 					return true, blockReasonDisabled, time.Time{}
 				}
+				// Check for quota exhaustion with RecoveryDate
+				if state.Quota.QuotaType == QuotaTypeExhausted && !state.Quota.RecoveryDate.IsZero() && state.Quota.RecoveryDate.After(now) {
+					return true, blockReasonCooldown, state.Quota.RecoveryDate
+				}
+				// Check for SkipCount (rate limit backoff)
+				if state.Quota.SkipCount > 0 {
+					return true, blockReasonSkipCount, time.Time{}
+				}
 				if state.Unavailable {
 					if state.NextRetryAfter.IsZero() {
 						return false, blockReasonNone, time.Time{}
@@ -249,6 +281,14 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 			}
 		}
 		return false, blockReasonNone, time.Time{}
+	}
+	// Check for auth-level quota exhaustion with RecoveryDate
+	if auth.Quota.QuotaType == QuotaTypeExhausted && !auth.Quota.RecoveryDate.IsZero() && auth.Quota.RecoveryDate.After(now) {
+		return true, blockReasonCooldown, auth.Quota.RecoveryDate
+	}
+	// Check for auth-level SkipCount (rate limit backoff)
+	if auth.Quota.SkipCount > 0 {
+		return true, blockReasonSkipCount, time.Time{}
 	}
 	if auth.Unavailable && auth.NextRetryAfter.After(now) {
 		next := auth.NextRetryAfter
