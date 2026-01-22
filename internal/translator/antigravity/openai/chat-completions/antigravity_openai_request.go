@@ -105,6 +105,8 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	}
 
 	// messages -> systemInstruction + contents
+	// Collect all content nodes to avoid O(n) sjson.SetRawBytes calls
+	var contentsNodes [][]byte
 	messages := parsed.Get("messages")
 	if messages.IsArray() {
 		arr := messages.Array()
@@ -214,7 +216,7 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 						}
 					}
 				}
-				out, _ = sjson.SetRawBytes(out, "request.contents.-1", node)
+				contentsNodes = append(contentsNodes, node)
 			} else if role == "assistant" {
 				node := []byte(`{"role":"model","parts":[]}`)
 				p := 0
@@ -273,7 +275,7 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							fIDs = append(fIDs, fid)
 						}
 					}
-					out, _ = sjson.SetRawBytes(out, "request.contents.-1", node)
+					contentsNodes = append(contentsNodes, node)
 
 					// Append a single tool content combining name + response per function
 					toolNode := []byte(`{"role":"user","parts":[]}`)
@@ -299,13 +301,27 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 						}
 					}
 					if pp > 0 {
-						out, _ = sjson.SetRawBytes(out, "request.contents.-1", toolNode)
+						contentsNodes = append(contentsNodes, toolNode)
 					}
 				} else {
-					out, _ = sjson.SetRawBytes(out, "request.contents.-1", node)
+					contentsNodes = append(contentsNodes, node)
 				}
 			}
 		}
+	}
+
+	// Build contents array in one shot to avoid O(n) sjson.SetRawBytes calls
+	if len(contentsNodes) > 0 {
+		var buf bytes.Buffer
+		buf.WriteByte('[')
+		for i, c := range contentsNodes {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			buf.Write(c)
+		}
+		buf.WriteByte(']')
+		out, _ = sjson.SetRawBytes(out, "request.contents", buf.Bytes())
 	}
 
 	// tools -> request.tools[0].functionDeclarations + request.tools[0].googleSearch passthrough
