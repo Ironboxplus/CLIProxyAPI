@@ -4,11 +4,12 @@ package util
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/bytedance/sonic"
 )
 
 // SchemaCache provides thread-safe caching for processed JSON schemas
@@ -37,9 +38,9 @@ func CleanJSONSchemaForAntigravityOptimized(jsonStr string) string {
 		return cached
 	}
 
-	// Unmarshal to Go struct for efficient manipulation
+	// Unmarshal to Go struct for efficient manipulation (using sonic for 2-3x speedup)
 	var schema interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &schema); err != nil {
+	if err := sonic.UnmarshalString(jsonStr, &schema); err != nil {
 		// Log error and try to handle invalid JSON
 		// In production, this should rarely happen
 		return jsonStr // Return as-is if parsing fails
@@ -56,16 +57,15 @@ func CleanJSONSchemaForAntigravityOptimized(jsonStr string) string {
 		ctx.applyNullableFields(schemaMap)
 	}
 
-	// Marshal back to JSON
-	result, err := json.Marshal(schema)
+	// Marshal back to JSON (using sonic for 2-3x speedup)
+	result, err := sonic.MarshalString(schema)
 	if err != nil {
 		// This should never happen with valid Go data structures
 		return jsonStr
 	}
 
-	resultStr := string(result)
-	schemaCache.Set(hash, resultStr)
-	return resultStr
+	schemaCache.Set(hash, result)
+	return result
 }
 
 // cleanContext holds state during the single-pass traversal

@@ -36,8 +36,8 @@ import (
 // Returns:
 //   - []byte: The transformed request data in Gemini CLI API format
 func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, stream bool) []byte {
-	// Use optimized implementation
-	return ConvertClaudeRequestToAntigravityOptimized(modelName, inputRawJSON, stream)
+	// Use fully optimized V2 implementation (no gjson/sjson)
+	return ConvertClaudeRequestToAntigravityV2(modelName, inputRawJSON, stream)
 }
 
 // convertClaudeRequestToAntigravityLegacy is the original implementation kept for reference and fallback.
