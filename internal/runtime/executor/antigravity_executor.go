@@ -1302,7 +1302,9 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	}
 
 	if useAntigravitySchema {
-		payloadStr = util.CleanJSONSchemaForAntigravity(payloadStr)
+		// Use the optimized schema cleaner with caching and single-pass optimization
+		// This replaces multiple tree traversals with one pass, dramatically reducing CPU usage
+		payloadStr = util.CleanJSONSchemaForAntigravityOptimized(payloadStr)
 	} else {
 		payloadStr = util.CleanJSONSchemaForGemini(payloadStr)
 	}
