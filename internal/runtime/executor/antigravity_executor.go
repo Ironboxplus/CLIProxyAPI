@@ -1200,34 +1200,22 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		}
 	}
 	payload = geminiToAntigravity(modelName, payload, projectID)
-	payload, _ = sjson.SetBytes(payload, "model", modelName)
 
+	// Use optimized post-processing for Claude/Gemini-3-pro-high models (avoids gjson/sjson)
 	if strings.Contains(modelName, "claude") || strings.Contains(modelName, "gemini-3-pro-high") {
+		payload = postProcessAntigravityPayload(payload, modelName)
+	} else {
+		// For other Gemini models: rename parametersJsonSchema to parameters and clean schemas
 		strJSON := string(payload)
 		paths := make([]string, 0)
-		util.Walk(gjson.ParseBytes(payload), "", "parametersJsonSchema", &paths)
+		util.Walk(gjson.Parse(strJSON), "", "parametersJsonSchema", &paths)
 		for _, p := range paths {
 			strJSON, _ = util.RenameKey(strJSON, p, p[:len(p)-len("parametersJsonSchema")]+"parameters")
 		}
-
-		// Use the centralized schema cleaner to handle unsupported keywords,
-		// const->enum conversion, and flattening of types/anyOf.
-		strJSON = util.CleanJSONSchemaForAntigravity(strJSON)
-
+		// Clean tool schemas for Gemini to remove unsupported JSON Schema keywords
+		// without adding empty-schema placeholders.
+		strJSON = util.CleanJSONSchemaForGemini(strJSON)
 		payload = []byte(strJSON)
-	}
-
-	if strings.Contains(modelName, "claude") || strings.Contains(modelName, "gemini-3-pro-high") {
-		systemInstructionPartsResult := gjson.GetBytes(payload, "request.systemInstruction.parts")
-		payload, _ = sjson.SetBytes(payload, "request.systemInstruction.role", "user")
-		payload, _ = sjson.SetBytes(payload, "request.systemInstruction.parts.0.text", systemInstruction)
-		payload, _ = sjson.SetBytes(payload, "request.systemInstruction.parts.1.text", fmt.Sprintf("Please ignore following [ignore]%s[/ignore]", systemInstruction))
-
-		if systemInstructionPartsResult.Exists() && systemInstructionPartsResult.IsArray() {
-			for _, partResult := range systemInstructionPartsResult.Array() {
-				payload, _ = sjson.SetRawBytes(payload, "request.systemInstruction.parts.-1", []byte(partResult.Raw))
-			}
-		}
 	}
 
 	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(payload))
@@ -1391,6 +1379,94 @@ func resolveCustomAntigravityBaseURL(auth *cliproxyauth.Auth) string {
 }
 
 func geminiToAntigravity(modelName string, payload []byte, projectID string) []byte {
+	// Use json.Unmarshal/Marshal instead of sjson for better performance
+	var data map[string]interface{}
+	if err := json.Unmarshal(payload, &data); err != nil {
+		// Fallback to original sjson approach if unmarshal fails
+		return geminiToAntigravityLegacy(modelName, payload, projectID)
+	}
+
+	// Set top-level fields
+	data["model"] = modelName
+	data["userAgent"] = "antigravity"
+	data["requestType"] = "agent"
+
+	// Set project ID
+	if projectID != "" {
+		data["project"] = projectID
+	} else {
+		data["project"] = generateProjectID()
+	}
+	data["requestId"] = generateRequestID()
+
+	// Handle request object
+	request, ok := data["request"].(map[string]interface{})
+	if !ok {
+		request = make(map[string]interface{})
+		data["request"] = request
+	}
+
+	// Set session ID
+	request["sessionId"] = generateStableSessionID(payload)
+
+	// Delete safety settings
+	delete(request, "safetySettings")
+
+	// Set tool config
+	toolConfig, ok := request["toolConfig"].(map[string]interface{})
+	if !ok {
+		toolConfig = make(map[string]interface{})
+		request["toolConfig"] = toolConfig
+	}
+	funcCallingConfig, ok := toolConfig["functionCallingConfig"].(map[string]interface{})
+	if !ok {
+		funcCallingConfig = make(map[string]interface{})
+		toolConfig["functionCallingConfig"] = funcCallingConfig
+	}
+	funcCallingConfig["mode"] = "VALIDATED"
+
+	// Handle Claude-specific tool processing
+	if strings.Contains(modelName, "claude") {
+		if tools, ok := request["tools"].([]interface{}); ok {
+			for _, tool := range tools {
+				toolMap, ok := tool.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if funcDecls, ok := toolMap["functionDeclarations"].([]interface{}); ok {
+					for _, funcDecl := range funcDecls {
+						funcDeclMap, ok := funcDecl.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						if paramSchema, exists := funcDeclMap["parametersJsonSchema"]; exists {
+							funcDeclMap["parameters"] = paramSchema
+							delete(funcDeclMap, "parametersJsonSchema")
+							// Delete $schema from parameters if it exists
+							if params, ok := funcDeclMap["parameters"].(map[string]interface{}); ok {
+								delete(params, "$schema")
+							}
+						}
+					}
+				}
+			}
+		}
+	} else {
+		// Non-claude: delete maxOutputTokens
+		if genConfig, ok := request["generationConfig"].(map[string]interface{}); ok {
+			delete(genConfig, "maxOutputTokens")
+		}
+	}
+
+	result, err := json.Marshal(data)
+	if err != nil {
+		return geminiToAntigravityLegacy(modelName, payload, projectID)
+	}
+	return result
+}
+
+// geminiToAntigravityLegacy is the original sjson-based implementation (fallback)
+func geminiToAntigravityLegacy(modelName string, payload []byte, projectID string) []byte {
 	template, _ := sjson.Set(string(payload), "model", modelName)
 	template, _ = sjson.Set(template, "userAgent", "antigravity")
 	template, _ = sjson.Set(template, "requestType", "agent")
@@ -1405,7 +1481,13 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 	template, _ = sjson.Set(template, "request.sessionId", generateStableSessionID(payload))
 
 	template, _ = sjson.Delete(template, "request.safetySettings")
-	//	template, _ = sjson.Set(template, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
+	if toolConfig := gjson.Get(template, "toolConfig"); toolConfig.Exists() && !gjson.Get(template, "request.toolConfig").Exists() {
+		template, _ = sjson.SetRaw(template, "request.toolConfig", toolConfig.Raw)
+		template, _ = sjson.Delete(template, "toolConfig")
+	}
+	if strings.Contains(modelName, "claude") {
+		template, _ = sjson.Set(template, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
+	}
 
 	if strings.Contains(modelName, "claude") || strings.Contains(modelName, "gemini-3-pro-high") {
 		gjson.Get(template, "request.tools").ForEach(func(key, tool gjson.Result) bool {
@@ -1440,16 +1522,23 @@ func generateSessionID() string {
 }
 
 func generateStableSessionID(payload []byte) string {
-	contents := gjson.GetBytes(payload, "request.contents")
-	if contents.IsArray() {
-		for _, content := range contents.Array() {
-			if content.Get("role").String() == "user" {
-				text := content.Get("parts.0.text").String()
-				if text != "" {
-					h := sha256.Sum256([]byte(text))
-					n := int64(binary.BigEndian.Uint64(h[:8])) & 0x7FFFFFFFFFFFFFFF
-					return "-" + strconv.FormatInt(n, 10)
-				}
+	// Use json.Unmarshal instead of gjson for better performance
+	var data struct {
+		Request struct {
+			Contents []struct {
+				Role  string `json:"role"`
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"contents"`
+		} `json:"request"`
+	}
+	if err := json.Unmarshal(payload, &data); err == nil {
+		for _, content := range data.Request.Contents {
+			if content.Role == "user" && len(content.Parts) > 0 && content.Parts[0].Text != "" {
+				h := sha256.Sum256([]byte(content.Parts[0].Text))
+				n := int64(binary.BigEndian.Uint64(h[:8])) & 0x7FFFFFFFFFFFFFFF
+				return "-" + strconv.FormatInt(n, 10)
 			}
 		}
 	}
@@ -1465,4 +1554,129 @@ func generateProjectID() string {
 	randSourceMutex.Unlock()
 	randomPart := strings.ToLower(uuid.NewString())[:5]
 	return adj + "-" + noun + "-" + randomPart
+}
+
+// postProcessAntigravityPayload performs post-processing on the payload without gjson/sjson
+// This replaces the expensive util.Walk + util.RenameKey + CleanJSONSchemaForAntigravityOptimized chain
+func postProcessAntigravityPayload(payload []byte, modelName string) []byte {
+	var data map[string]interface{}
+	if err := json.Unmarshal(payload, &data); err != nil {
+		return payload // Return as-is on parse error
+	}
+
+	// Set model name
+	data["model"] = modelName
+
+	// Process tools: rename parametersJsonSchema to parameters and clean schemas
+	if request, ok := data["request"].(map[string]interface{}); ok {
+		// Process tools
+		if tools, ok := request["tools"].([]interface{}); ok {
+			for _, tool := range tools {
+				if toolMap, ok := tool.(map[string]interface{}); ok {
+					if funcDecls, ok := toolMap["functionDeclarations"].([]interface{}); ok {
+						for _, fd := range funcDecls {
+							if fdMap, ok := fd.(map[string]interface{}); ok {
+								// Rename parametersJsonSchema to parameters and clean schema
+								if schema, exists := fdMap["parametersJsonSchema"]; exists {
+									// Clean the schema if it's a map
+									if schemaMap, isMap := schema.(map[string]interface{}); isMap {
+										cleanSchemaInPlace(schemaMap)
+									}
+									fdMap["parameters"] = schema
+									delete(fdMap, "parametersJsonSchema")
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Process systemInstruction for Claude/Gemini models
+		processSystemInstruction(request)
+	}
+
+	result, err := json.Marshal(data)
+	if err != nil {
+		return payload
+	}
+	return result
+}
+
+// cleanSchemaInPlace applies schema cleaning transformations in-place
+func cleanSchemaInPlace(schema map[string]interface{}) {
+	// Remove $ref and replace with description hint
+	if refVal, ok := schema["$ref"].(string); ok {
+		defName := refVal
+		if idx := strings.LastIndex(refVal, "/"); idx >= 0 {
+			defName = refVal[idx+1:]
+		}
+		hint := fmt.Sprintf("See: %s", defName)
+		if existing, ok := schema["description"].(string); ok && existing != "" {
+			hint = fmt.Sprintf("%s (%s)", existing, hint)
+		}
+		for k := range schema {
+			delete(schema, k)
+		}
+		schema["type"] = "object"
+		schema["description"] = hint
+		return
+	}
+
+	// Handle const -> enum
+	if constVal, ok := schema["const"]; ok {
+		if _, hasEnum := schema["enum"]; !hasEnum {
+			schema["enum"] = []interface{}{constVal}
+		}
+		delete(schema, "const")
+	}
+
+	// Remove unsupported keys
+	unsupportedKeys := []string{
+		"$schema", "$defs", "definitions", "propertyNames",
+		"minLength", "maxLength", "pattern", "format", "default", "examples",
+		"exclusiveMinimum", "exclusiveMaximum", "minItems", "maxItems",
+	}
+	for _, key := range unsupportedKeys {
+		delete(schema, key)
+	}
+
+	// Recursively clean nested schemas
+	if props, ok := schema["properties"].(map[string]interface{}); ok {
+		for _, prop := range props {
+			if propMap, ok := prop.(map[string]interface{}); ok {
+				cleanSchemaInPlace(propMap)
+			}
+		}
+	}
+	if items, ok := schema["items"].(map[string]interface{}); ok {
+		cleanSchemaInPlace(items)
+	}
+}
+
+// processSystemInstruction modifies the system instruction for Claude/Gemini models
+func processSystemInstruction(request map[string]interface{}) {
+	sysInst, ok := request["systemInstruction"].(map[string]interface{})
+	if !ok {
+		sysInst = make(map[string]interface{})
+		request["systemInstruction"] = sysInst
+	}
+
+	// Get existing parts
+	var existingParts []interface{}
+	if parts, ok := sysInst["parts"].([]interface{}); ok {
+		existingParts = parts
+	}
+
+	// Create new parts array with system instruction prefix
+	newParts := []interface{}{
+		map[string]interface{}{"text": systemInstruction},
+		map[string]interface{}{"text": fmt.Sprintf("Please ignore following [ignore]%s[/ignore]", systemInstruction)},
+	}
+
+	// Append existing parts
+	newParts = append(newParts, existingParts...)
+
+	sysInst["role"] = "user"
+	sysInst["parts"] = newParts
 }

@@ -35,7 +35,14 @@ import (
 //
 // Returns:
 //   - []byte: The transformed request data in Gemini CLI API format
-func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ bool) []byte {
+func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, stream bool) []byte {
+	// Use optimized implementation (struct-based, no sjson)
+	return ConvertClaudeRequestToAntigravityOptimized(modelName, inputRawJSON, stream)
+}
+
+// convertClaudeRequestToAntigravityLegacy is the original implementation kept for reference and fallback.
+// This function uses sjson operations which are slower but battle-tested.
+func convertClaudeRequestToAntigravityLegacy(modelName string, inputRawJSON []byte, _ bool) []byte {
 	enableThoughtTranslate := true
 	rawJSON := bytes.Clone(inputRawJSON)
 
@@ -313,7 +320,7 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 			inputSchemaResult := toolResult.Get("input_schema")
 			if inputSchemaResult.Exists() && inputSchemaResult.IsObject() {
 				// Sanitize the input schema for Antigravity API compatibility
-				inputSchema := util.CleanJSONSchemaForAntigravity(inputSchemaResult.Raw)
+				inputSchema := util.CleanJSONSchemaForAntigravityOptimized(inputSchemaResult.Raw)
 				tool, _ := sjson.Delete(toolResult.Raw, "input_schema")
 				tool, _ = sjson.SetRaw(tool, "parametersJsonSchema", inputSchema)
 				for toolKey := range gjson.Parse(tool).Map() {
