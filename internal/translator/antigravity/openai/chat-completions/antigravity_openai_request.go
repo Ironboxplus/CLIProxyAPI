@@ -27,7 +27,10 @@ const geminiCLIFunctionThoughtSignature = "skip_thought_signature_validator"
 // Returns:
 //   - []byte: The transformed request data in Gemini CLI API format
 func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ bool) []byte {
-	rawJSON := inputRawJSON
+	rawJSON := bytes.Clone(inputRawJSON)
+	// Parse JSON once upfront to avoid repeated parsing in gjson.GetBytes calls
+	parsed := gjson.ParseBytes(rawJSON)
+
 	// Base envelope (no default thinkingConfig)
 	out := []byte(`{"project":"","request":{"contents":[]},"model":"gemini-2.5-pro"}`)
 
@@ -36,7 +39,7 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 
 	// Apply thinking configuration: convert OpenAI reasoning_effort to Gemini CLI thinkingConfig.
 	// Inline translation-only mapping; capability checks happen later in ApplyThinking.
-	re := gjson.GetBytes(rawJSON, "reasoning_effort")
+	re := parsed.Get("reasoning_effort")
 	if re.Exists() {
 		effort := strings.ToLower(strings.TrimSpace(re.String()))
 		if effort != "" {
@@ -52,21 +55,21 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	}
 
 	// Temperature/top_p/top_k/max_tokens
-	if tr := gjson.GetBytes(rawJSON, "temperature"); tr.Exists() && tr.Type == gjson.Number {
+	if tr := parsed.Get("temperature"); tr.Exists() && tr.Type == gjson.Number {
 		out, _ = sjson.SetBytes(out, "request.generationConfig.temperature", tr.Num)
 	}
-	if tpr := gjson.GetBytes(rawJSON, "top_p"); tpr.Exists() && tpr.Type == gjson.Number {
+	if tpr := parsed.Get("top_p"); tpr.Exists() && tpr.Type == gjson.Number {
 		out, _ = sjson.SetBytes(out, "request.generationConfig.topP", tpr.Num)
 	}
-	if tkr := gjson.GetBytes(rawJSON, "top_k"); tkr.Exists() && tkr.Type == gjson.Number {
+	if tkr := parsed.Get("top_k"); tkr.Exists() && tkr.Type == gjson.Number {
 		out, _ = sjson.SetBytes(out, "request.generationConfig.topK", tkr.Num)
 	}
-	if maxTok := gjson.GetBytes(rawJSON, "max_tokens"); maxTok.Exists() && maxTok.Type == gjson.Number {
+	if maxTok := parsed.Get("max_tokens"); maxTok.Exists() && maxTok.Type == gjson.Number {
 		out, _ = sjson.SetBytes(out, "request.generationConfig.maxOutputTokens", maxTok.Num)
 	}
 
 	// Candidate count (OpenAI 'n' parameter)
-	if n := gjson.GetBytes(rawJSON, "n"); n.Exists() && n.Type == gjson.Number {
+	if n := parsed.Get("n"); n.Exists() && n.Type == gjson.Number {
 		if val := n.Int(); val > 1 {
 			out, _ = sjson.SetBytes(out, "request.generationConfig.candidateCount", val)
 		}
@@ -74,7 +77,7 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 
 	// Map OpenAI modalities -> Gemini CLI request.generationConfig.responseModalities
 	// e.g. "modalities": ["image", "text"] -> ["IMAGE", "TEXT"]
-	if mods := gjson.GetBytes(rawJSON, "modalities"); mods.Exists() && mods.IsArray() {
+	if mods := parsed.Get("modalities"); mods.Exists() && mods.IsArray() {
 		var responseMods []string
 		for _, m := range mods.Array() {
 			switch strings.ToLower(m.String()) {
@@ -91,7 +94,7 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 
 	// OpenRouter-style image_config support
 	// If the input uses top-level image_config.aspect_ratio, map it into request.generationConfig.imageConfig.aspectRatio.
-	if imgCfg := gjson.GetBytes(rawJSON, "image_config"); imgCfg.Exists() && imgCfg.IsObject() {
+	if imgCfg := parsed.Get("image_config"); imgCfg.Exists() && imgCfg.IsObject() {
 		if ar := imgCfg.Get("aspect_ratio"); ar.Exists() && ar.Type == gjson.String {
 			out, _ = sjson.SetBytes(out, "request.generationConfig.imageConfig.aspectRatio", ar.Str)
 		}
@@ -101,7 +104,7 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	}
 
 	// messages -> systemInstruction + contents
-	messages := gjson.GetBytes(rawJSON, "messages")
+	messages := parsed.Get("messages")
 	if messages.IsArray() {
 		arr := messages.Array()
 		// First pass: assistant tool_calls id->name map
@@ -305,7 +308,7 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	}
 
 	// tools -> request.tools[].functionDeclarations + request.tools[].googleSearch/codeExecution/urlContext passthrough
-	tools := gjson.GetBytes(rawJSON, "tools")
+	tools := parsed.Get("tools")
 	if tools.IsArray() && len(tools.Array()) > 0 {
 		functionToolNode := []byte(`{}`)
 		hasFunction := false
