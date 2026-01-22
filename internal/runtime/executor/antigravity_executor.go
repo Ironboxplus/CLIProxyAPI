@@ -1391,6 +1391,94 @@ func resolveCustomAntigravityBaseURL(auth *cliproxyauth.Auth) string {
 }
 
 func geminiToAntigravity(modelName string, payload []byte, projectID string) []byte {
+	// Use json.Unmarshal/Marshal instead of sjson for better performance
+	var data map[string]interface{}
+	if err := json.Unmarshal(payload, &data); err != nil {
+		// Fallback to original sjson approach if unmarshal fails
+		return geminiToAntigravityLegacy(modelName, payload, projectID)
+	}
+
+	// Set top-level fields
+	data["model"] = modelName
+	data["userAgent"] = "antigravity"
+	data["requestType"] = "agent"
+
+	// Set project ID
+	if projectID != "" {
+		data["project"] = projectID
+	} else {
+		data["project"] = generateProjectID()
+	}
+	data["requestId"] = generateRequestID()
+
+	// Handle request object
+	request, ok := data["request"].(map[string]interface{})
+	if !ok {
+		request = make(map[string]interface{})
+		data["request"] = request
+	}
+
+	// Set session ID
+	request["sessionId"] = generateStableSessionID(payload)
+
+	// Delete safety settings
+	delete(request, "safetySettings")
+
+	// Set tool config
+	toolConfig, ok := request["toolConfig"].(map[string]interface{})
+	if !ok {
+		toolConfig = make(map[string]interface{})
+		request["toolConfig"] = toolConfig
+	}
+	funcCallingConfig, ok := toolConfig["functionCallingConfig"].(map[string]interface{})
+	if !ok {
+		funcCallingConfig = make(map[string]interface{})
+		toolConfig["functionCallingConfig"] = funcCallingConfig
+	}
+	funcCallingConfig["mode"] = "VALIDATED"
+
+	// Handle Claude-specific tool processing
+	if strings.Contains(modelName, "claude") {
+		if tools, ok := request["tools"].([]interface{}); ok {
+			for _, tool := range tools {
+				toolMap, ok := tool.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if funcDecls, ok := toolMap["functionDeclarations"].([]interface{}); ok {
+					for _, funcDecl := range funcDecls {
+						funcDeclMap, ok := funcDecl.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						if paramSchema, exists := funcDeclMap["parametersJsonSchema"]; exists {
+							funcDeclMap["parameters"] = paramSchema
+							delete(funcDeclMap, "parametersJsonSchema")
+							// Delete $schema from parameters if it exists
+							if params, ok := funcDeclMap["parameters"].(map[string]interface{}); ok {
+								delete(params, "$schema")
+							}
+						}
+					}
+				}
+			}
+		}
+	} else {
+		// Non-claude: delete maxOutputTokens
+		if genConfig, ok := request["generationConfig"].(map[string]interface{}); ok {
+			delete(genConfig, "maxOutputTokens")
+		}
+	}
+
+	result, err := json.Marshal(data)
+	if err != nil {
+		return geminiToAntigravityLegacy(modelName, payload, projectID)
+	}
+	return result
+}
+
+// geminiToAntigravityLegacy is the original sjson-based implementation (fallback)
+func geminiToAntigravityLegacy(modelName string, payload []byte, projectID string) []byte {
 	template, _ := sjson.Set(string(payload), "model", modelName)
 	template, _ = sjson.Set(template, "userAgent", "antigravity")
 	template, _ = sjson.Set(template, "requestType", "agent")
