@@ -99,9 +99,6 @@ func ConvertClaudeRequestToAntigravityOptimized(modelName string, inputRawJSON [
 	enableThoughtTranslate := true
 	rawJSON := bytes.Clone(inputRawJSON)
 
-	// Derive session ID for signature caching
-	sessionID := deriveSessionIDOptimized(rawJSON)
-
 	// Build the output structure
 	output := AntigravityRequest{
 		Model: modelName,
@@ -161,11 +158,11 @@ func ConvertClaudeRequestToAntigravityOptimized(modelName string, inputRawJSON [
 
 					switch contentType {
 					case "thinking":
-						part, signature, skip := processThinkingContent(contentResult, modelName, sessionID, &enableThoughtTranslate)
+						part, signature, skip := processThinkingContent(contentResult, modelName, &enableThoughtTranslate)
 						if skip {
 							continue
 						}
-						if cache.HasValidSignature(signature) {
+						if cache.HasValidSignature(modelName, signature) {
 							currentMessageThinkingSignature = signature
 						}
 						if part != nil {
@@ -378,13 +375,13 @@ func deriveSessionIDOptimized(rawJSON []byte) string {
 }
 
 // processThinkingContent processes a thinking content block
-func processThinkingContent(contentResult gjson.Result, modelName, sessionID string, enableThoughtTranslate *bool) (*Part, string, bool) {
+func processThinkingContent(contentResult gjson.Result, modelName string, enableThoughtTranslate *bool) (*Part, string, bool) {
 	thinkingText := thinking.GetThinkingText(contentResult)
 
 	// Always try cached signature first
 	signature := ""
-	if sessionID != "" && thinkingText != "" {
-		if cachedSig := cache.GetCachedSignature(modelName, sessionID, thinkingText); cachedSig != "" {
+	if thinkingText != "" {
+		if cachedSig := cache.GetCachedSignature(modelName, thinkingText); cachedSig != "" {
 			signature = cachedSig
 		}
 	}
@@ -396,7 +393,7 @@ func processThinkingContent(contentResult gjson.Result, modelName, sessionID str
 			arrayClientSignatures := strings.SplitN(signatureResult.String(), "#", 2)
 			if len(arrayClientSignatures) == 2 && modelName == arrayClientSignatures[0] {
 				clientSignature := arrayClientSignatures[1]
-				if cache.HasValidSignature(clientSignature) {
+				if cache.HasValidSignature(modelName, clientSignature) {
 					signature = clientSignature
 				}
 			}
@@ -404,7 +401,7 @@ func processThinkingContent(contentResult gjson.Result, modelName, sessionID str
 	}
 
 	// Skip unsigned thinking blocks
-	if !cache.HasValidSignature(signature) {
+	if !cache.HasValidSignature(modelName, signature) {
 		*enableThoughtTranslate = false
 		return nil, "", true
 	}
@@ -443,7 +440,7 @@ func processToolUseContent(contentResult gjson.Result, currentMessageThinkingSig
 
 	const skipSentinel = "skip_thought_signature_validator"
 	thoughtSig := skipSentinel
-	if cache.HasValidSignature(currentMessageThinkingSignature) {
+	if cache.HasValidSignature("", currentMessageThinkingSignature) {
 		thoughtSig = currentMessageThinkingSignature
 	}
 
