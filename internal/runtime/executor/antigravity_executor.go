@@ -1700,6 +1700,11 @@ func postProcessAntigravityPayload(payload []byte, modelName string) []byte {
 									}
 									fdMap["parameters"] = schema
 									delete(fdMap, "parametersJsonSchema")
+								} else if schema, exists := fdMap["parameters"]; exists {
+									// Also clean parameters if already renamed by geminiToAntigravity
+									if schemaMap, isMap := schema.(map[string]interface{}); isMap {
+										cleanSchemaInPlace(schemaMap)
+									}
 								}
 							}
 						}
@@ -1739,6 +1744,21 @@ func cleanSchemaInPlace(schema map[string]interface{}) {
 		return
 	}
 
+	// Flatten type array (e.g., ["string", "null"] -> "string")
+	if typeArr, ok := schema["type"].([]interface{}); ok && len(typeArr) > 0 {
+		var firstNonNull string
+		for _, t := range typeArr {
+			if tStr, ok := t.(string); ok && tStr != "null" && tStr != "" {
+				firstNonNull = tStr
+				break
+			}
+		}
+		if firstNonNull == "" {
+			firstNonNull = "string" // default type
+		}
+		schema["type"] = firstNonNull
+	}
+
 	// Handle const -> enum
 	if constVal, ok := schema["const"]; ok {
 		if _, hasEnum := schema["enum"]; !hasEnum {
@@ -1767,6 +1787,16 @@ func cleanSchemaInPlace(schema map[string]interface{}) {
 	}
 	if items, ok := schema["items"].(map[string]interface{}); ok {
 		cleanSchemaInPlace(items)
+	}
+	// Handle anyOf/oneOf/allOf arrays
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		if arr, ok := schema[key].([]interface{}); ok {
+			for _, item := range arr {
+				if itemMap, ok := item.(map[string]interface{}); ok {
+					cleanSchemaInPlace(itemMap)
+				}
+			}
+		}
 	}
 }
 
