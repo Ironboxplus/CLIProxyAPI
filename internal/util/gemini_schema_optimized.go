@@ -367,7 +367,8 @@ func handleTypeArrayInPlace(node map[string]interface{}, typeArr []interface{}, 
 	}
 
 	// Track nullable fields for later processing
-	if hasNull && strings.Contains(path, ".properties.") {
+	// Match both "properties.field" (top-level) and "...properties.field" (nested)
+	if hasNull && strings.Contains(path, "properties.") {
 		appendHintToNode(node, "(nullable)")
 		// Extract object path and field name
 		// Path format: "...properties.fieldName..."

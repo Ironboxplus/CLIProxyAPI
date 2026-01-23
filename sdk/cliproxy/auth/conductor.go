@@ -465,7 +465,7 @@ func (m *Manager) Load(ctx context.Context) error {
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
-		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
+		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied", HTTPStatus: http.StatusBadRequest}
 	}
 
 	retryTimes, maxWait := m.retrySettings()
@@ -492,7 +492,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	if lastErr != nil {
 		return cliproxyexecutor.Response{}, lastErr
 	}
-	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
+	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available", HTTPStatus: http.StatusServiceUnavailable}
 }
 
 // ExecuteCount performs a non-streaming execution using the configured selector and executor.
@@ -500,7 +500,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
-		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
+		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied", HTTPStatus: http.StatusBadRequest}
 	}
 
 	retryTimes, maxWait := m.retrySettings()
@@ -527,7 +527,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 	if lastErr != nil {
 		return cliproxyexecutor.Response{}, lastErr
 	}
-	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
+	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available", HTTPStatus: http.StatusServiceUnavailable}
 }
 
 // ExecuteStream performs a streaming execution using the configured selector and executor.
@@ -535,7 +535,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (<-chan cliproxyexecutor.StreamChunk, error) {
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
-		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
+		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied", HTTPStatus: http.StatusBadRequest}
 	}
 
 	retryTimes, maxWait := m.retrySettings()
@@ -562,12 +562,12 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	if lastErr != nil {
 		return nil, lastErr
 	}
-	return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
+	return nil, &Error{Code: "auth_not_found", Message: "no auth available", HTTPStatus: http.StatusServiceUnavailable}
 }
 
 func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	if len(providers) == 0 {
-		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
+		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied", HTTPStatus: http.StatusBadRequest}
 	}
 	routeModel := req.Model
 	tried := make(map[string]struct{})
@@ -616,7 +616,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 
 func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	if len(providers) == 0 {
-		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
+		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied", HTTPStatus: http.StatusBadRequest}
 	}
 	routeModel := req.Model
 	tried := make(map[string]struct{})
@@ -665,7 +665,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 
 func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (<-chan cliproxyexecutor.StreamChunk, error) {
 	if len(providers) == 0 {
-		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
+		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied", HTTPStatus: http.StatusBadRequest}
 	}
 	routeModel := req.Model
 	tried := make(map[string]struct{})
@@ -731,7 +731,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 
 func (m *Manager) executeWithProvider(ctx context.Context, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	if provider == "" {
-		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "provider identifier is empty"}
+		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "provider identifier is empty", HTTPStatus: http.StatusBadRequest}
 	}
 	routeModel := req.Model
 	tried := make(map[string]struct{})
@@ -780,7 +780,7 @@ func (m *Manager) executeWithProvider(ctx context.Context, provider string, req 
 
 func (m *Manager) executeCountWithProvider(ctx context.Context, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	if provider == "" {
-		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "provider identifier is empty"}
+		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "provider identifier is empty", HTTPStatus: http.StatusBadRequest}
 	}
 	routeModel := req.Model
 	tried := make(map[string]struct{})
@@ -829,7 +829,7 @@ func (m *Manager) executeCountWithProvider(ctx context.Context, provider string,
 
 func (m *Manager) executeStreamWithProvider(ctx context.Context, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (<-chan cliproxyexecutor.StreamChunk, error) {
 	if provider == "" {
-		return nil, &Error{Code: "provider_not_found", Message: "provider identifier is empty"}
+		return nil, &Error{Code: "provider_not_found", Message: "provider identifier is empty", HTTPStatus: http.StatusBadRequest}
 	}
 	routeModel := req.Model
 	tried := make(map[string]struct{})
@@ -1252,7 +1252,7 @@ func waitForCooldown(ctx context.Context, wait time.Duration) error {
 
 func (m *Manager) executeProvidersOnce(ctx context.Context, providers []string, fn func(context.Context, string) (cliproxyexecutor.Response, error)) (cliproxyexecutor.Response, error) {
 	if len(providers) == 0 {
-		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
+		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied", HTTPStatus: http.StatusBadRequest}
 	}
 	var lastErr error
 	for _, provider := range providers {
@@ -1265,12 +1265,12 @@ func (m *Manager) executeProvidersOnce(ctx context.Context, providers []string, 
 	if lastErr != nil {
 		return cliproxyexecutor.Response{}, lastErr
 	}
-	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
+	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available", HTTPStatus: http.StatusServiceUnavailable}
 }
 
 func (m *Manager) executeStreamProvidersOnce(ctx context.Context, providers []string, fn func(context.Context, string) (<-chan cliproxyexecutor.StreamChunk, error)) (<-chan cliproxyexecutor.StreamChunk, error) {
 	if len(providers) == 0 {
-		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
+		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied", HTTPStatus: http.StatusBadRequest}
 	}
 	var lastErr error
 	for _, provider := range providers {
@@ -1283,7 +1283,7 @@ func (m *Manager) executeStreamProvidersOnce(ctx context.Context, providers []st
 	if lastErr != nil {
 		return nil, lastErr
 	}
-	return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
+	return nil, &Error{Code: "auth_not_found", Message: "no auth available", HTTPStatus: http.StatusServiceUnavailable}
 }
 
 // MarkResult records an execution result and notifies hooks.
@@ -1791,7 +1791,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	executor, okExecutor := m.executors[provider]
 	if !okExecutor {
 		m.mu.RUnlock()
-		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
+		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered", HTTPStatus: http.StatusBadRequest}
 	}
 	candidates := make([]*Auth, 0, len(m.auths))
 	modelKey := strings.TrimSpace(model)
@@ -1817,7 +1817,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	}
 	if len(candidates) == 0 {
 		m.mu.RUnlock()
-		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
+		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available", HTTPStatus: http.StatusServiceUnavailable}
 	}
 	selected, errPick := m.selector.Pick(ctx, provider, model, opts, candidates)
 	if errPick != nil {
@@ -1826,7 +1826,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	}
 	if selected == nil {
 		m.mu.RUnlock()
-		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth", HTTPStatus: http.StatusServiceUnavailable}
 	}
 	authCopy := selected.Clone()
 	m.mu.RUnlock()
@@ -1851,7 +1851,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		providerSet[p] = struct{}{}
 	}
 	if len(providerSet) == 0 {
-		return nil, nil, "", &Error{Code: "provider_not_found", Message: "no provider supplied"}
+		return nil, nil, "", &Error{Code: "provider_not_found", Message: "no provider supplied", HTTPStatus: http.StatusBadRequest}
 	}
 
 	m.mu.RLock()
@@ -1889,7 +1889,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	}
 	if len(candidates) == 0 {
 		m.mu.RUnlock()
-		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
+		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available", HTTPStatus: http.StatusServiceUnavailable}
 	}
 	selected, errPick := m.selector.Pick(ctx, "mixed", model, opts, candidates)
 	if errPick != nil {
@@ -1898,13 +1898,13 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	}
 	if selected == nil {
 		m.mu.RUnlock()
-		return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+		return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth", HTTPStatus: http.StatusServiceUnavailable}
 	}
 	providerKey := strings.TrimSpace(strings.ToLower(selected.Provider))
 	executor, okExecutor := m.executors[providerKey]
 	if !okExecutor {
 		m.mu.RUnlock()
-		return nil, nil, "", &Error{Code: "executor_not_found", Message: "executor not registered"}
+		return nil, nil, "", &Error{Code: "executor_not_found", Message: "executor not registered", HTTPStatus: http.StatusBadRequest}
 	}
 	authCopy := selected.Clone()
 	m.mu.RUnlock()
@@ -2414,28 +2414,28 @@ func (m *Manager) InjectCredentials(req *http.Request, authID string) error {
 // PrepareHttpRequest injects provider credentials into the supplied HTTP request.
 func (m *Manager) PrepareHttpRequest(ctx context.Context, auth *Auth, req *http.Request) error {
 	if m == nil {
-		return &Error{Code: "provider_not_found", Message: "manager is nil"}
+		return &Error{Code: "provider_not_found", Message: "manager is nil", HTTPStatus: http.StatusInternalServerError}
 	}
 	if auth == nil {
-		return &Error{Code: "auth_not_found", Message: "auth is nil"}
+		return &Error{Code: "auth_not_found", Message: "auth is nil", HTTPStatus: http.StatusUnauthorized}
 	}
 	if req == nil {
-		return &Error{Code: "invalid_request", Message: "http request is nil"}
+		return &Error{Code: "invalid_request", Message: "http request is nil", HTTPStatus: http.StatusBadRequest}
 	}
 	if ctx != nil {
 		*req = *req.WithContext(ctx)
 	}
 	providerKey := executorKeyFromAuth(auth)
 	if providerKey == "" {
-		return &Error{Code: "provider_not_found", Message: "auth provider is empty"}
+		return &Error{Code: "provider_not_found", Message: "auth provider is empty", HTTPStatus: http.StatusBadRequest}
 	}
 	exec := m.executorFor(providerKey)
 	if exec == nil {
-		return &Error{Code: "provider_not_found", Message: "executor not registered for provider: " + providerKey}
+		return &Error{Code: "provider_not_found", Message: "executor not registered for provider: " + providerKey, HTTPStatus: http.StatusBadRequest}
 	}
 	preparer, ok := exec.(RequestPreparer)
 	if !ok || preparer == nil {
-		return &Error{Code: "not_supported", Message: "executor does not support http request preparation"}
+		return &Error{Code: "not_supported", Message: "executor does not support http request preparation", HTTPStatus: http.StatusNotImplemented}
 	}
 	return preparer.PrepareRequest(req, auth)
 }
@@ -2469,21 +2469,21 @@ func (m *Manager) NewHttpRequest(ctx context.Context, auth *Auth, method, target
 // HttpRequest injects provider credentials into the supplied HTTP request and executes it.
 func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request) (*http.Response, error) {
 	if m == nil {
-		return nil, &Error{Code: "provider_not_found", Message: "manager is nil"}
+		return nil, &Error{Code: "provider_not_found", Message: "manager is nil", HTTPStatus: http.StatusInternalServerError}
 	}
 	if auth == nil {
-		return nil, &Error{Code: "auth_not_found", Message: "auth is nil"}
+		return nil, &Error{Code: "auth_not_found", Message: "auth is nil", HTTPStatus: http.StatusUnauthorized}
 	}
 	if req == nil {
-		return nil, &Error{Code: "invalid_request", Message: "http request is nil"}
+		return nil, &Error{Code: "invalid_request", Message: "http request is nil", HTTPStatus: http.StatusBadRequest}
 	}
 	providerKey := executorKeyFromAuth(auth)
 	if providerKey == "" {
-		return nil, &Error{Code: "provider_not_found", Message: "auth provider is empty"}
+		return nil, &Error{Code: "provider_not_found", Message: "auth provider is empty", HTTPStatus: http.StatusBadRequest}
 	}
 	exec := m.executorFor(providerKey)
 	if exec == nil {
-		return nil, &Error{Code: "provider_not_found", Message: "executor not registered for provider: " + providerKey}
+		return nil, &Error{Code: "provider_not_found", Message: "executor not registered for provider: " + providerKey, HTTPStatus: http.StatusBadRequest}
 	}
 	return exec.HttpRequest(ctx, auth, req)
 }

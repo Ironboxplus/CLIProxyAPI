@@ -552,7 +552,10 @@ func antigravityOnboardUser(ctx context.Context, accessToken, tierID string, htt
 					return projectID, nil
 				}
 
-				return "", fmt.Errorf("no project_id in response")
+				// No project_id found, but operation completed - return empty instead of error
+				// This can happen for accounts without Gemini Code Assist enabled
+				log.Warnf("onboardUser completed but no project_id found in response: %s", strings.TrimSpace(string(bodyBytes)))
+				return "", nil
 			}
 
 			time.Sleep(2 * time.Second)

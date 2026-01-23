@@ -209,7 +209,7 @@ func decrementSkipCountOnSelect(auth *Auth, model string) {
 
 func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
 	if len(auths) == 0 {
-		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
+		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates", HTTPStatus: http.StatusServiceUnavailable}
 	}
 
 	availableByPriority, cooldownCount, earliest := collectAvailableByPriority(auths, model, now)
@@ -252,7 +252,7 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]
 			}
 			return nil, newModelCooldownError(model, providerForError, resetIn)
 		}
-		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
+		return nil, &Error{Code: "auth_unavailable", Message: "no auth available", HTTPStatus: http.StatusServiceUnavailable}
 	}
 
 	bestPriority := 0
