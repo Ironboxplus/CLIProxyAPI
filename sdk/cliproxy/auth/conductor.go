@@ -1384,8 +1384,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						}
 						newSkipCount = prevSkipCount + increment
 						newSkipIncrement = increment * 2
-						if newSkipIncrement > 16 {
-							newSkipIncrement = 16 // Cap to prevent overflow
+						if newSkipIncrement > 64 {
+							newSkipIncrement = 64 // Cap to prevent overflow
 						}
 
 						if result.RetryAfter != nil {
