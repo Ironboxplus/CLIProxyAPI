@@ -114,6 +114,9 @@ type Config struct {
 	// gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, and ampcode.
 	OAuthModelAlias map[string][]OAuthModelAlias `yaml:"oauth-model-alias,omitempty" json:"oauth-model-alias,omitempty"`
 
+	// AntigravityRateLimit defines rate limiting configuration for Antigravity requests.
+	AntigravityRateLimit AntigravityRateLimitConfig `yaml:"antigravity-rate-limit" json:"antigravity-rate-limit"`
+
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
@@ -163,6 +166,32 @@ type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.
 	// Supported values: "round-robin" (default), "fill-first".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+}
+
+// AntigravityRateLimitConfig configures rate limiting for Antigravity requests.
+type AntigravityRateLimitConfig struct {
+	// Enabled controls whether rate limiting is active.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// RequestsPerSecond defines the maximum number of requests allowed per second.
+	// Default: 1.0 (one request per second).
+	// Set to 0 to disable rate limiting.
+	RequestsPerSecond float64 `yaml:"requests-per-second" json:"requests-per-second"`
+
+	// Burst defines the maximum burst size (number of requests that can be sent at once).
+	// Default: 1 (no burst).
+	// Higher values allow temporary spikes in request rate.
+	Burst int `yaml:"burst" json:"burst"`
+
+	// MaxConcurrency defines the maximum number of concurrent requests.
+	// Default: 0 (disabled).
+	// Set to a positive value to enable adaptive concurrency limiting.
+	MaxConcurrency int `yaml:"max-concurrency" json:"max-concurrency"`
+
+	// MinConcurrency defines the minimum concurrency limit.
+	// Default: 1.
+	// The limiter will never decrease below this value even after 429 errors.
+	MinConcurrency int `yaml:"min-concurrency" json:"min-concurrency"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.

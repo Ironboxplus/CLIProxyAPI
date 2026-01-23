@@ -1400,8 +1400,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					}
 
 					state.NextRetryAfter = next
+
+					// For rate limit: use SkipCount mechanism, don't mark as quota exceeded
+					// For quota exhausted: mark as exceeded, suspend model
+					exceeded := quotaType == QuotaTypeExhausted
 					state.Quota = QuotaState{
-						Exceeded:      true,
+						Exceeded:      exceeded,
 						Reason:        "quota",
 						NextRecoverAt: next,
 						BackoffLevel:  backoffLevel,
@@ -1416,11 +1420,14 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					if quotaType == QuotaTypeExhausted {
 						quotaTypeStr = "exhausted"
 					}
-					log.Warnf("rate limit 429: auth=%s model=%s skipCount=%d->%d skipIncrement=%d->%d quotaType=%s",
-						auth.Label, result.Model, prevSkipCount, newSkipCount, prevSkipIncrement, newSkipIncrement, quotaTypeStr)
+					log.Warnf("rate limit 429: auth=%s model=%s skipCount=%d->%d skipIncrement=%d->%d quotaType=%s exceeded=%v",
+						auth.Label, result.Model, prevSkipCount, newSkipCount, prevSkipIncrement, newSkipIncrement, quotaTypeStr, exceeded)
 
-					suspendReason = "quota"
-					shouldSuspendModel = true
+					// Only suspend model for quota exhausted, not for temporary rate limits
+					if quotaType == QuotaTypeExhausted {
+						suspendReason = "quota"
+						shouldSuspendModel = true
+					}
 					setModelQuota = true
 				case 408, 500, 502, 503, 504:
 					next := now.Add(1 * time.Minute)

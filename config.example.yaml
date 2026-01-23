@@ -309,6 +309,16 @@ codex-instructions-enabled: false
 #   github-copilot:
 #     - "raptor-mini"
 
+# Antigravity rate limiting configuration
+# Controls the rate of requests sent to the Antigravity API using token bucket and concurrency limiting.
+# This ensures requests are throttled to prevent rate limit errors while appearing as waiting (not rejection) to clients.
+antigravity-rate-limit:
+  enabled: false              # Enable/disable rate limiting (default: false)
+  requests-per-second: 1.0    # Maximum requests per second (default: 1.0)
+  burst: 1                    # Maximum burst size - number of requests that can be sent at once (default: 1)
+  max-concurrency: 0          # Maximum concurrent requests (0 = disabled, adaptive limiting based on 429 errors)
+  min-concurrency: 1          # Minimum concurrency limit (never decrease below this even after 429 errors)
+
 # Optional payload configuration
 # payload:
 #   default: # Default rules only set parameters when they are missing in the payload.

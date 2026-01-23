@@ -58,7 +58,10 @@ var (
 
 // AntigravityExecutor proxies requests to the antigravity upstream.
 type AntigravityExecutor struct {
-	cfg *config.Config
+	cfg                *config.Config
+	rateLimiter        *util.TokenBucketRateLimiter
+	concurrencyLimiter *util.ConcurrencyLimiter
+	initOnce           sync.Once
 }
 
 // NewAntigravityExecutor creates a new Antigravity executor instance.
@@ -69,7 +72,105 @@ type AntigravityExecutor struct {
 // Returns:
 //   - *AntigravityExecutor: A new Antigravity executor instance
 func NewAntigravityExecutor(cfg *config.Config) *AntigravityExecutor {
-	return &AntigravityExecutor{cfg: cfg}
+	return &AntigravityExecutor{
+		cfg:                cfg,
+		rateLimiter:        nil, // will be initialized lazily
+		concurrencyLimiter: nil, // will be initialized lazily
+	}
+}
+
+// initRateLimiter initializes the rate limiter based on configuration.
+// This is called once on the first request.
+func (e *AntigravityExecutor) initRateLimiter() {
+	e.initOnce.Do(func() {
+		if e.cfg != nil && e.cfg.AntigravityRateLimit.Enabled {
+			rps := e.cfg.AntigravityRateLimit.RequestsPerSecond
+			burst := e.cfg.AntigravityRateLimit.Burst
+
+			// Set defaults if not configured
+			if rps <= 0 {
+				rps = 1.0 // default: 1 request per second
+			}
+			if burst <= 0 {
+				burst = 1 // default: no burst
+			}
+
+			e.rateLimiter = util.NewTokenBucketRateLimiter(rps, burst)
+			log.Infof("antigravity executor: rate limiter initialized with %.2f req/s, burst=%d", rps, burst)
+
+			// Initialize concurrency limiter if configured
+			maxConcurrency := e.cfg.AntigravityRateLimit.MaxConcurrency
+			minConcurrency := e.cfg.AntigravityRateLimit.MinConcurrency
+
+			if maxConcurrency > 0 {
+				if minConcurrency <= 0 {
+					minConcurrency = 1
+				}
+				e.concurrencyLimiter = util.NewConcurrencyLimiter(maxConcurrency, minConcurrency)
+				log.Infof("antigravity executor: concurrency limiter initialized with max=%d, min=%d", maxConcurrency, minConcurrency)
+			} else {
+				// Create a disabled concurrency limiter
+				e.concurrencyLimiter = util.NewConcurrencyLimiter(0, 0)
+			}
+		} else {
+			// Create disabled limiters
+			e.rateLimiter = util.NewTokenBucketRateLimiter(0, 0)
+			e.concurrencyLimiter = util.NewConcurrencyLimiter(0, 0)
+		}
+	})
+}
+
+// waitForRateLimit waits for rate limiter permission before proceeding.
+// Returns an error if context is cancelled.
+func (e *AntigravityExecutor) waitForRateLimit(ctx context.Context) error {
+	e.initRateLimiter()
+	if e.rateLimiter == nil || e.rateLimiter.IsDisabled() {
+		return nil
+	}
+	return e.rateLimiter.Wait(ctx)
+}
+
+// acquireConcurrencySlot acquires a concurrency slot before making a request.
+// Returns an error if context is cancelled.
+func (e *AntigravityExecutor) acquireConcurrencySlot(ctx context.Context) error {
+	e.initRateLimiter()
+	if e.concurrencyLimiter == nil || e.concurrencyLimiter.IsDisabled() {
+		return nil
+	}
+	return e.concurrencyLimiter.Acquire(ctx)
+}
+
+// releaseConcurrencySlot releases a concurrency slot after request completes.
+// success indicates whether the request succeeded (no 429 error).
+func (e *AntigravityExecutor) releaseConcurrencySlot(success bool) {
+	e.initRateLimiter()
+	if e.concurrencyLimiter == nil || e.concurrencyLimiter.IsDisabled() {
+		return
+	}
+	e.concurrencyLimiter.Release(success)
+}
+
+// recordRateLimitError records a 429 error for adaptive limiting.
+// Only adjusts concurrency for true rate limits (retry-after < 5 min).
+// Quota exhausted (retry-after > 5 min) should just switch accounts, not reduce concurrency.
+func (e *AntigravityExecutor) recordRateLimitError(retryAfter *time.Duration) {
+	e.initRateLimiter()
+	if e.concurrencyLimiter == nil || e.concurrencyLimiter.IsDisabled() {
+		log.Warnf("antigravity executor: recordRateLimitError called but limiter is nil or disabled")
+		return
+	}
+
+	// Check if this is quota exhausted (long retry-after) vs rate limit (short retry-after)
+	if retryAfter != nil && *retryAfter > 5*time.Minute {
+		// Don't adjust concurrency, just let conductor switch to another account
+		log.Infof("antigravity executor: quota exhausted (retry after %v), not adjusting concurrency", *retryAfter)
+		return
+	}
+
+	// True rate limit - requests too frequent
+	// Adjust concurrency to slow down
+	log.Infof("antigravity executor: recording 429 rate limit error for adaptive limiting")
+	e.concurrencyLimiter.RecordRateLimitError()
 }
 
 // Identifier returns the executor identifier.
@@ -109,6 +210,16 @@ func (e *AntigravityExecutor) HttpRequest(ctx context.Context, auth *cliproxyaut
 
 // Execute performs a non-streaming request to the Antigravity API.
 func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	// Acquire concurrency slot
+	if errAcquire := e.acquireConcurrencySlot(ctx); errAcquire != nil {
+		return resp, errAcquire
+	}
+	defer func() {
+		// Release slot with success flag (no 429)
+		success := err == nil || (err != nil && !is429Error(err))
+		e.releaseConcurrencySlot(success)
+	}()
+
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	isClaude := strings.Contains(strings.ToLower(baseModel), "claude")
 
@@ -158,6 +269,11 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 			return resp, err
 		}
 
+		// Apply rate limiting before every HTTP request to Antigravity API
+		if errWait := e.waitForRateLimit(ctx); errWait != nil {
+			return resp, errWait
+		}
+
 		httpResp, errDo := httpClient.Do(httpReq)
 		if errDo != nil {
 			recordAPIResponseError(ctx, e.cfg, errDo)
@@ -192,9 +308,17 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 			lastStatus = httpResp.StatusCode
 			lastBody = append([]byte(nil), bodyBytes...)
 			lastErr = nil
-			if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
-				log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
-				continue
+			if httpResp.StatusCode == http.StatusTooManyRequests {
+				// Parse retry-after first to distinguish rate limit vs quota exhausted
+				var retryAfter *time.Duration
+				if parsed, parseErr := parseRetryDelay(bodyBytes); parseErr == nil && parsed != nil {
+					retryAfter = parsed
+				}
+				e.recordRateLimitError(retryAfter) // Record 429 for adaptive limiting
+				if idx+1 < len(baseURLs) {
+					log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+					continue
+				}
 			}
 			sErr := statusErr{code: httpResp.StatusCode, msg: string(bodyBytes)}
 			if httpResp.StatusCode == http.StatusTooManyRequests {
@@ -233,6 +357,9 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 
 // executeClaudeNonStream performs a claude non-streaming request to the Antigravity API.
 func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	// Note: rate limiting and concurrency are already handled by Execute() caller
+	// This method is called internally, so we don't duplicate the limiting logic
+
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	token, updatedAuth, errToken := e.ensureAccessToken(ctx, auth)
@@ -275,6 +402,11 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		if errReq != nil {
 			err = errReq
 			return resp, err
+		}
+
+		// Apply rate limiting before every HTTP request to Antigravity API
+		if errWait := e.waitForRateLimit(ctx); errWait != nil {
+			return resp, errWait
 		}
 
 		httpResp, errDo := httpClient.Do(httpReq)
@@ -323,9 +455,17 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 			lastStatus = httpResp.StatusCode
 			lastBody = append([]byte(nil), bodyBytes...)
 			lastErr = nil
-			if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
-				log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
-				continue
+			if httpResp.StatusCode == http.StatusTooManyRequests {
+				// Parse retry-after first to distinguish rate limit vs quota exhausted
+				var retryAfter *time.Duration
+				if parsed, parseErr := parseRetryDelay(bodyBytes); parseErr == nil && parsed != nil {
+					retryAfter = parsed
+				}
+				e.recordRateLimitError(retryAfter) // Record 429 for adaptive limiting
+				if idx+1 < len(baseURLs) {
+					log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+					continue
+				}
 			}
 			sErr := statusErr{code: httpResp.StatusCode, msg: string(bodyBytes)}
 			if httpResp.StatusCode == http.StatusTooManyRequests {
@@ -597,6 +737,27 @@ func (e *AntigravityExecutor) convertStreamToNonStream(stream []byte) []byte {
 
 // ExecuteStream performs a streaming request to the Antigravity API.
 func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
+	// Apply rate limiting before processing request
+	if errWait := e.waitForRateLimit(ctx); errWait != nil {
+		return nil, errWait
+	}
+
+	// Acquire concurrency slot
+	if errAcquire := e.acquireConcurrencySlot(ctx); errAcquire != nil {
+		return nil, errAcquire
+	}
+
+	// Track whether we need to release the slot
+	// We'll release it either on error before streaming starts, or in the goroutine after streaming completes
+	slotReleased := false
+	defer func() {
+		if !slotReleased && err != nil {
+			// Error occurred before streaming started, release slot
+			success := !is429Error(err)
+			e.releaseConcurrencySlot(success)
+		}
+	}()
+
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	ctx = context.WithValue(ctx, "alt", "")
@@ -642,6 +803,12 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			err = errReq
 			return nil, err
 		}
+
+		// Apply rate limiting before every HTTP request to Antigravity API
+		if errWait := e.waitForRateLimit(ctx); errWait != nil {
+			return nil, errWait
+		}
+
 		httpResp, errDo := httpClient.Do(httpReq)
 		if errDo != nil {
 			recordAPIResponseError(ctx, e.cfg, errDo)
@@ -688,9 +855,17 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			lastStatus = httpResp.StatusCode
 			lastBody = append([]byte(nil), bodyBytes...)
 			lastErr = nil
-			if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
-				log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
-				continue
+			if httpResp.StatusCode == http.StatusTooManyRequests {
+				// Parse retry-after first to distinguish rate limit vs quota exhausted
+				var retryAfter *time.Duration
+				if parsed, parseErr := parseRetryDelay(bodyBytes); parseErr == nil && parsed != nil {
+					retryAfter = parsed
+				}
+				e.recordRateLimitError(retryAfter) // Record 429 for adaptive limiting
+				if idx+1 < len(baseURLs) {
+					log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+					continue
+				}
 			}
 			sErr := statusErr{code: httpResp.StatusCode, msg: string(bodyBytes)}
 			if httpResp.StatusCode == http.StatusTooManyRequests {
@@ -704,8 +879,13 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 
 		out := make(chan cliproxyexecutor.StreamChunk)
 		stream = out
+		slotReleased = true // Mark that we'll release in the goroutine
 		go func(resp *http.Response) {
 			defer close(out)
+			defer func() {
+				// Release concurrency slot after streaming completes
+				e.releaseConcurrencySlot(true) // streaming succeeded if we got here
+			}()
 			defer func() {
 				if errClose := resp.Body.Close(); errClose != nil {
 					log.Errorf("antigravity executor: close response body error: %v", errClose)
@@ -782,6 +962,21 @@ func (e *AntigravityExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Au
 
 // CountTokens counts tokens for the given request using the Antigravity API.
 func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	// Apply rate limiting before processing request
+	if errWait := e.waitForRateLimit(ctx); errWait != nil {
+		return cliproxyexecutor.Response{}, errWait
+	}
+
+	// Acquire concurrency slot
+	if errAcquire := e.acquireConcurrencySlot(ctx); errAcquire != nil {
+		return cliproxyexecutor.Response{}, errAcquire
+	}
+	var err error
+	defer func() {
+		success := err == nil || !is429Error(err)
+		e.releaseConcurrencySlot(success)
+	}()
+
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	token, updatedAuth, errToken := e.ensureAccessToken(ctx, auth)
@@ -802,7 +997,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 	// Prepare payload once (doesn't depend on baseURL)
 	payload := sdktranslator.TranslateRequest(from, to, baseModel, bytes.Clone(req.Payload), false)
 
-	payload, err := thinking.ApplyThinking(payload, req.Model, from.String(), to.String(), e.Identifier())
+	payload, err = thinking.ApplyThinking(payload, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
@@ -863,11 +1058,17 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 			AuthValue: authValue,
 		})
 
+		// Apply rate limiting before every HTTP request to Antigravity API
+		if errWait := e.waitForRateLimit(ctx); errWait != nil {
+			return cliproxyexecutor.Response{}, errWait
+		}
+
 		httpResp, errDo := httpClient.Do(httpReq)
 		if errDo != nil {
 			recordAPIResponseError(ctx, e.cfg, errDo)
 			if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
-				return cliproxyexecutor.Response{}, errDo
+				err = errDo
+				return cliproxyexecutor.Response{}, err
 			}
 			lastStatus = 0
 			lastBody = nil
@@ -876,7 +1077,8 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 				log.Debugf("antigravity executor: request error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 				continue
 			}
-			return cliproxyexecutor.Response{}, errDo
+			err = errDo
+			return cliproxyexecutor.Response{}, err
 		}
 
 		recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
@@ -886,7 +1088,8 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 		}
 		if errRead != nil {
 			recordAPIResponseError(ctx, e.cfg, errRead)
-			return cliproxyexecutor.Response{}, errRead
+			err = errRead
+			return cliproxyexecutor.Response{}, err
 		}
 		appendAPIResponseChunk(ctx, e.cfg, bodyBytes)
 
@@ -899,9 +1102,17 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 		lastStatus = httpResp.StatusCode
 		lastBody = append([]byte(nil), bodyBytes...)
 		lastErr = nil
-		if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
-			log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
-			continue
+		if httpResp.StatusCode == http.StatusTooManyRequests {
+			// Parse retry-after first to distinguish rate limit vs quota exhausted
+			var retryAfter *time.Duration
+			if parsed, parseErr := parseRetryDelay(bodyBytes); parseErr == nil && parsed != nil {
+				retryAfter = parsed
+			}
+			e.recordRateLimitError(retryAfter) // Record 429 for adaptive limiting
+			if idx+1 < len(baseURLs) {
+				log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+				continue
+			}
 		}
 		sErr := statusErr{code: httpResp.StatusCode, msg: string(bodyBytes)}
 		if httpResp.StatusCode == http.StatusTooManyRequests {
@@ -909,7 +1120,8 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 				sErr.retryAfter = retryAfter
 			}
 		}
-		return cliproxyexecutor.Response{}, sErr
+		err = sErr
+		return cliproxyexecutor.Response{}, err
 	}
 
 	switch {
@@ -920,17 +1132,21 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 				sErr.retryAfter = retryAfter
 			}
 		}
-		return cliproxyexecutor.Response{}, sErr
+		err = sErr
+		return cliproxyexecutor.Response{}, err
 	case lastErr != nil:
-		return cliproxyexecutor.Response{}, lastErr
+		err = lastErr
+		return cliproxyexecutor.Response{}, err
 	default:
-		return cliproxyexecutor.Response{}, statusErr{code: http.StatusServiceUnavailable, msg: "antigravity executor: no base url available"}
+		err = statusErr{code: http.StatusServiceUnavailable, msg: "antigravity executor: no base url available"}
+		return cliproxyexecutor.Response{}, err
 	}
 }
 
 // FetchAntigravityModels retrieves available models using the supplied auth.
 func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
 	exec := &AntigravityExecutor{cfg: cfg}
+	exec.initRateLimiter() // Initialize rate limiter before using
 	token, updatedAuth, errToken := exec.ensureAccessToken(ctx, auth)
 	if errToken != nil || token == "" {
 		return nil
@@ -953,6 +1169,11 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 		httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
 		if host := resolveHost(baseURL); host != "" {
 			httpReq.Host = host
+		}
+
+		// Apply rate limiting before every HTTP request to Antigravity API
+		if errWait := exec.waitForRateLimit(ctx); errWait != nil {
+			return nil
 		}
 
 		httpResp, errDo := httpClient.Do(httpReq)
@@ -979,9 +1200,17 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 			return nil
 		}
 		if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-			if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
-				log.Debugf("antigravity executor: models request rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
-				continue
+			if httpResp.StatusCode == http.StatusTooManyRequests {
+				// Parse retry-after first to distinguish rate limit vs quota exhausted
+				var retryAfter *time.Duration
+				if parsed, parseErr := parseRetryDelay(bodyBytes); parseErr == nil && parsed != nil {
+					retryAfter = parsed
+				}
+				exec.recordRateLimitError(retryAfter) // Record 429 for adaptive limiting
+				if idx+1 < len(baseURLs) {
+					log.Debugf("antigravity executor: models request rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+					continue
+				}
 			}
 			return nil
 		}
@@ -1218,7 +1447,6 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		payload = []byte(strJSON)
 	}
 
-
 	if strings.Contains(modelName, "claude") || strings.Contains(modelName, "gemini-3-pro-high") {
 		systemInstructionPartsResult := gjson.GetBytes(payload, "request.systemInstruction.parts")
 		payload, _ = sjson.SetBytes(payload, "request.systemInstruction.role", "user")
@@ -1237,7 +1465,6 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	} else {
 		payload, _ = sjson.DeleteBytes(payload, "request.generationConfig.maxOutputTokens")
 	}
-
 
 	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(payload))
 	if errReq != nil {
@@ -1709,3 +1936,15 @@ func processSystemInstruction(request map[string]interface{}) {
 	sysInst["role"] = "user"
 	sysInst["parts"] = newParts
 }
+
+// is429Error checks if the error is a 429 rate limit error.
+func is429Error(err error) bool {
+	if err == nil {
+		return false
+	}
+	if sErr, ok := err.(statusErr); ok {
+		return sErr.code == http.StatusTooManyRequests
+	}
+	return false
+}
+
