@@ -1350,6 +1350,10 @@ func clearAuthStateOnSuccess(auth *Auth, now time.Time) {
 	auth.Quota.Reason = ""
 	auth.Quota.NextRecoverAt = time.Time{}
 	auth.Quota.BackoffLevel = 0
+	auth.Quota.SkipCount = 0
+	auth.Quota.SkipIncrement = 0
+	auth.Quota.QuotaType = QuotaTypeUnknown
+	auth.Quota.RecoveryDate = time.Time{}
 	auth.LastError = nil
 	auth.NextRetryAfter = time.Time{}
 	auth.UpdatedAt = now
@@ -1435,15 +1439,51 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.StatusMessage = "quota exhausted"
 		auth.Quota.Exceeded = true
 		auth.Quota.Reason = "quota"
+
 		var next time.Time
 		if retryAfter != nil {
 			next = now.Add(*retryAfter)
+			// Determine quota type based on retry duration
+			if *retryAfter > 5*time.Minute {
+				// Long retry -> quota exhausted, use RecoveryDate
+				auth.Quota.QuotaType = QuotaTypeExhausted
+				auth.Quota.RecoveryDate = next
+				// Don't increment SkipCount for exhausted quota
+			} else {
+				// Short retry -> rate limit, use SkipCount
+				auth.Quota.QuotaType = QuotaTypeRateLimit
+				// Apply SkipIncrement exponential backoff
+				if auth.Quota.SkipIncrement == 0 {
+					auth.Quota.SkipIncrement = 1
+				}
+				auth.Quota.SkipCount += auth.Quota.SkipIncrement
+				// Double SkipIncrement, but cap at 16
+				if auth.Quota.SkipIncrement < 16 {
+					auth.Quota.SkipIncrement *= 2
+					if auth.Quota.SkipIncrement > 16 {
+						auth.Quota.SkipIncrement = 16
+					}
+				}
+			}
 		} else {
+			// No retryAfter provided, use backoff
 			cooldown, nextLevel := nextQuotaCooldown(auth.Quota.BackoffLevel)
 			if cooldown > 0 {
 				next = now.Add(cooldown)
 			}
 			auth.Quota.BackoffLevel = nextLevel
+			// Use rate limit type with SkipCount
+			auth.Quota.QuotaType = QuotaTypeRateLimit
+			if auth.Quota.SkipIncrement == 0 {
+				auth.Quota.SkipIncrement = 1
+			}
+			auth.Quota.SkipCount += auth.Quota.SkipIncrement
+			if auth.Quota.SkipIncrement < 16 {
+				auth.Quota.SkipIncrement *= 2
+				if auth.Quota.SkipIncrement > 16 {
+					auth.Quota.SkipIncrement = 16
+				}
+			}
 		}
 		auth.Quota.NextRecoverAt = next
 		auth.NextRetryAfter = next
