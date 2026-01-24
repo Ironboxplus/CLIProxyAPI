@@ -87,6 +87,11 @@ type Service struct {
 
 	// wsGateway manages websocket Gemini providers.
 	wsGateway *wsrelay.Manager
+
+	// executorCache caches singleton executor instances per provider to ensure
+	// multiple accounts of the same provider share the same executor (and rate limiters).
+	executorCache   map[string]coreauth.ProviderExecutor
+	executorCacheMu sync.RWMutex
 }
 
 // RegisterUsagePlugin registers a usage plugin on the global usage manager.
@@ -358,6 +363,35 @@ func (s *Service) ensureExecutorsForAuth(a *coreauth.Auth) {
 	if a.Disabled {
 		return
 	}
+
+	// Initialize executor cache if needed
+	if s.executorCache == nil {
+		s.executorCacheMu.Lock()
+		if s.executorCache == nil {
+			s.executorCache = make(map[string]coreauth.ProviderExecutor)
+		}
+		s.executorCacheMu.Unlock()
+	}
+	// Helper function to register executor with caching
+	registerCachedExecutor := func(providerKey string, createExecutor func() coreauth.ProviderExecutor) {
+		s.executorCacheMu.RLock()
+		cached, exists := s.executorCache[providerKey]
+		s.executorCacheMu.RUnlock()
+
+		if exists {
+			// Reuse existing executor instance to preserve rate limiter state
+			s.coreManager.RegisterExecutor(cached)
+			return
+		}
+
+		// Create new executor and cache it
+		newExec := createExecutor()
+		s.executorCacheMu.Lock()
+		s.executorCache[providerKey] = newExec
+		s.executorCacheMu.Unlock()
+		s.coreManager.RegisterExecutor(newExec)
+	}
+
 	if compatProviderKey, _, isCompat := openAICompatInfoFromAuth(a); isCompat {
 		if compatProviderKey == "" {
 			compatProviderKey = strings.ToLower(strings.TrimSpace(a.Provider))
@@ -365,41 +399,67 @@ func (s *Service) ensureExecutorsForAuth(a *coreauth.Auth) {
 		if compatProviderKey == "" {
 			compatProviderKey = "openai-compatibility"
 		}
-		s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor(compatProviderKey, s.cfg))
+		registerCachedExecutor(compatProviderKey, func() coreauth.ProviderExecutor {
+			return executor.NewOpenAICompatExecutor(compatProviderKey, s.cfg)
+		})
 		return
 	}
+
 	switch strings.ToLower(a.Provider) {
 	case "gemini":
-		s.coreManager.RegisterExecutor(executor.NewGeminiExecutor(s.cfg))
+		registerCachedExecutor("gemini", func() coreauth.ProviderExecutor {
+			return executor.NewGeminiExecutor(s.cfg)
+		})
 	case "vertex":
-		s.coreManager.RegisterExecutor(executor.NewGeminiVertexExecutor(s.cfg))
+		registerCachedExecutor("vertex", func() coreauth.ProviderExecutor {
+			return executor.NewGeminiVertexExecutor(s.cfg)
+		})
 	case "gemini-cli":
-		s.coreManager.RegisterExecutor(executor.NewGeminiCLIExecutor(s.cfg))
+		registerCachedExecutor("gemini-cli", func() coreauth.ProviderExecutor {
+			return executor.NewGeminiCLIExecutor(s.cfg)
+		})
 	case "aistudio":
 		if s.wsGateway != nil {
+			// AIStudio executor is per-auth (contains auth ID), so don't cache it
 			s.coreManager.RegisterExecutor(executor.NewAIStudioExecutor(s.cfg, a.ID, s.wsGateway))
 		}
 		return
 	case "antigravity":
-		s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(s.cfg))
+		registerCachedExecutor("antigravity", func() coreauth.ProviderExecutor {
+			return executor.NewAntigravityExecutor(s.cfg)
+		})
 	case "claude":
-		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(s.cfg))
+		registerCachedExecutor("claude", func() coreauth.ProviderExecutor {
+			return executor.NewClaudeExecutor(s.cfg)
+		})
 	case "codex":
-		s.coreManager.RegisterExecutor(executor.NewCodexExecutor(s.cfg))
+		registerCachedExecutor("codex", func() coreauth.ProviderExecutor {
+			return executor.NewCodexExecutor(s.cfg)
+		})
 	case "qwen":
-		s.coreManager.RegisterExecutor(executor.NewQwenExecutor(s.cfg))
+		registerCachedExecutor("qwen", func() coreauth.ProviderExecutor {
+			return executor.NewQwenExecutor(s.cfg)
+		})
 	case "iflow":
-		s.coreManager.RegisterExecutor(executor.NewIFlowExecutor(s.cfg))
+		registerCachedExecutor("iflow", func() coreauth.ProviderExecutor {
+			return executor.NewIFlowExecutor(s.cfg)
+		})
 	case "kiro":
-		s.coreManager.RegisterExecutor(executor.NewKiroExecutor(s.cfg))
+		registerCachedExecutor("kiro", func() coreauth.ProviderExecutor {
+			return executor.NewKiroExecutor(s.cfg)
+		})
 	case "github-copilot":
-		s.coreManager.RegisterExecutor(executor.NewGitHubCopilotExecutor(s.cfg))
+		registerCachedExecutor("github-copilot", func() coreauth.ProviderExecutor {
+			return executor.NewGitHubCopilotExecutor(s.cfg)
+		})
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(a.Provider))
 		if providerKey == "" {
 			providerKey = "openai-compatibility"
 		}
-		s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor(providerKey, s.cfg))
+		registerCachedExecutor(providerKey, func() coreauth.ProviderExecutor {
+			return executor.NewOpenAICompatExecutor(providerKey, s.cfg)
+		})
 	}
 }
 
