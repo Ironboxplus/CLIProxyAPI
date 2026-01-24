@@ -1177,18 +1177,18 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					if result.RetryAfter != nil {
 						retryDuration = *result.RetryAfter
 					}
-					
+
 					// QuotaType threshold: <= 5 minutes = RateLimit, > 5 minutes = Exhausted
 					if retryDuration > 0 && retryDuration > 5*time.Minute {
 						quotaType = QuotaTypeExhausted
 					} else {
 						quotaType = QuotaTypeRateLimit
 					}
-					
+
 					// Apply SkipIncrement exponential backoff (only for RateLimit, not Exhausted)
 					var skipCount, skipIncrement int
 					var recoveryDate time.Time
-					
+
 					if quotaType == QuotaTypeRateLimit {
 						// Use SkipIncrement for gradual backoff
 						skipIncrement = state.Quota.SkipIncrement
@@ -1211,7 +1211,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							recoveryDate = now.Add(*result.RetryAfter)
 						}
 					}
-					
+
 					var next time.Time
 					backoffLevel := state.Quota.BackoffLevel
 					if result.RetryAfter != nil {
@@ -1237,6 +1237,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					suspendReason = "quota"
 					shouldSuspendModel = true
 					setModelQuota = true
+				case 400:
+					// 400 Bad Request - client-side error, do not retry and do not suspend account
+					// Common cases: prompt too long, invalid request format, parameter validation errors
+					state.NextRetryAfter = time.Time{}
 				case 408, 500, 502, 503, 504:
 					if quotaCooldownDisabled.Load() {
 						state.NextRetryAfter = time.Time{}
@@ -1471,6 +1475,14 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 	}
 	statusCode := statusCodeFromResult(resultErr)
 	switch statusCode {
+	case 400:
+		// 400 Bad Request - client-side error (e.g., prompt too long, invalid request format)
+		// These are not account issues, so don't mark as unavailable and don't set retry delay
+		auth.Unavailable = false
+		auth.Status = StatusActive // Keep account active for other valid requests
+		auth.StatusMessage = "client request error"
+		auth.NextRetryAfter = time.Time{} // No retry delay needed
+		return                            // Exit early to avoid setting auth as unavailable
 	case 401:
 		auth.StatusMessage = "unauthorized"
 		auth.NextRetryAfter = now.Add(30 * time.Minute)

@@ -50,3 +50,4 @@ _bmad-output/*
 .DS_Store
 ._*
 *.bak
+python decision_tree/collect_validation_data.py --model-path /home/kss/.cache/modelscope/hub/models/LLM-Research/gemma-3-27b-it --sample-limit 1000 --output decision_tree/data_validation --resume
