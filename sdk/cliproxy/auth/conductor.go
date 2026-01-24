@@ -1171,6 +1171,47 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					suspendReason = "not_found"
 					shouldSuspendModel = true
 				case 429:
+					// Determine QuotaType based on retry duration
+					var quotaType QuotaType
+					var retryDuration time.Duration
+					if result.RetryAfter != nil {
+						retryDuration = *result.RetryAfter
+					}
+					
+					// QuotaType threshold: <= 5 minutes = RateLimit, > 5 minutes = Exhausted
+					if retryDuration > 0 && retryDuration > 5*time.Minute {
+						quotaType = QuotaTypeExhausted
+					} else {
+						quotaType = QuotaTypeRateLimit
+					}
+					
+					// Apply SkipIncrement exponential backoff (only for RateLimit, not Exhausted)
+					var skipCount, skipIncrement int
+					var recoveryDate time.Time
+					
+					if quotaType == QuotaTypeRateLimit {
+						// Use SkipIncrement for gradual backoff
+						skipIncrement = state.Quota.SkipIncrement
+						if skipIncrement == 0 {
+							skipIncrement = 1
+						}
+						skipCount = state.Quota.SkipCount + skipIncrement
+						// Double SkipIncrement, but cap at 16
+						if skipIncrement < 16 {
+							skipIncrement *= 2
+							if skipIncrement > 16 {
+								skipIncrement = 16
+							}
+						}
+					} else {
+						// QuotaTypeExhausted: use RecoveryDate, no SkipCount
+						skipCount = 0
+						skipIncrement = 0
+						if result.RetryAfter != nil {
+							recoveryDate = now.Add(*result.RetryAfter)
+						}
+					}
+					
 					var next time.Time
 					backoffLevel := state.Quota.BackoffLevel
 					if result.RetryAfter != nil {
@@ -1188,6 +1229,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						Reason:        "quota",
 						NextRecoverAt: next,
 						BackoffLevel:  backoffLevel,
+						QuotaType:     quotaType,
+						SkipCount:     skipCount,
+						SkipIncrement: skipIncrement,
+						RecoveryDate:  recoveryDate,
 					}
 					suspendReason = "quota"
 					shouldSuspendModel = true
