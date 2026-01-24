@@ -70,14 +70,39 @@ func (c *ConcurrencyLimiter) Acquire(ctx context.Context) error {
 		return nil
 	}
 
-	select {
-	case c.semaphore <- struct{}{}:
+	// Use a loop to respect the dynamic maxConcurrency limit
+	// without recreating the semaphore channel
+	for {
 		c.mu.Lock()
-		c.currentInFlight++
+		currentMax := c.maxConcurrency
+		currentIn := c.currentInFlight
 		c.mu.Unlock()
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+
+		// Check if we can proceed based on logical limit
+		if currentIn < currentMax {
+			// Try to acquire from semaphore with a short timeout
+			// to allow checking the limit again if it changes
+			select {
+			case c.semaphore <- struct{}{}:
+				c.mu.Lock()
+				c.currentInFlight++
+				c.mu.Unlock()
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(10 * time.Millisecond):
+				// Retry loop
+				continue
+			}
+		}
+
+		// Wait a bit before retrying if at limit
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+			// Continue loop
+		}
 	}
 }
 
@@ -156,8 +181,9 @@ func (c *ConcurrencyLimiter) decreaseLimit() {
 		log.Infof("concurrency limiter: decreased limit from %d to %d due to rate limiting", oldMax, c.maxConcurrency)
 	}
 
-	// Recreate semaphore with new size
-	c.semaphore = make(chan struct{}, c.maxConcurrency)
+	// DO NOT recreate semaphore - it would leak all currently held slots!
+	// The semaphore capacity is fixed at initialization (initialMax).
+	// We rely on maxConcurrency as a logical limit checked in Acquire().
 }
 
 // increaseLimit increases the concurrency limit (must hold lock).
@@ -182,8 +208,7 @@ func (c *ConcurrencyLimiter) increaseLimit() {
 		log.Debugf("concurrency limiter: increased limit from %d to %d", oldMax, c.maxConcurrency)
 	}
 
-	// Recreate semaphore with new size
-	c.semaphore = make(chan struct{}, c.maxConcurrency)
+	// DO NOT recreate semaphore - use fixed capacity with dynamic logical limit.
 }
 
 // GetCurrentLimit returns the current concurrency limit.
@@ -237,8 +262,23 @@ func (c *ConcurrencyLimiter) UpdateLimit(maxConcurrency, minConcurrency int) {
 	}
 	c.minConcurrency = minConcurrency
 
-	// Recreate semaphore with new size
-	c.semaphore = make(chan struct{}, maxConcurrency)
+	// Only recreate semaphore if capacity needs to increase beyond current
+	if c.semaphore == nil || cap(c.semaphore) < maxConcurrency {
+		// Drain old semaphore before recreating
+		if c.semaphore != nil {
+			for c.currentInFlight > 0 {
+				select {
+				case <-c.semaphore:
+					c.currentInFlight--
+				default:
+					// No more items to drain
+					break
+				}
+			}
+		}
+		c.semaphore = make(chan struct{}, maxConcurrency)
+		c.currentInFlight = 0
+	}
 }
 
 // Reset resets the limiter to initial state.
@@ -251,8 +291,8 @@ func (c *ConcurrencyLimiter) Reset() {
 	c.failureCount = 0
 	c.lastAdjustment = time.Now()
 
-	// Recreate semaphore
-	c.semaphore = make(chan struct{}, c.initialMax)
+	// Do not recreate semaphore - just reset the logical limit.
+	// The physical semaphore capacity remains fixed at initialMax.
 }
 
 // ResetCooloff resets the last adjustment time to allow immediate adaptation.

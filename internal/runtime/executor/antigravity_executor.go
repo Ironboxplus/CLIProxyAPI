@@ -210,6 +210,11 @@ func (e *AntigravityExecutor) HttpRequest(ctx context.Context, auth *cliproxyaut
 
 // Execute performs a non-streaming request to the Antigravity API.
 func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	// Apply rate limiting once before processing
+	if errWait := e.waitForRateLimit(ctx); errWait != nil {
+		return resp, errWait
+	}
+
 	// Acquire concurrency slot
 	if errAcquire := e.acquireConcurrencySlot(ctx); errAcquire != nil {
 		return resp, errAcquire
@@ -267,11 +272,6 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		if errReq != nil {
 			err = errReq
 			return resp, err
-		}
-
-		// Apply rate limiting before every HTTP request to Antigravity API
-		if errWait := e.waitForRateLimit(ctx); errWait != nil {
-			return resp, errWait
 		}
 
 		httpResp, errDo := httpClient.Do(httpReq)
@@ -402,11 +402,6 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		if errReq != nil {
 			err = errReq
 			return resp, err
-		}
-
-		// Apply rate limiting before every HTTP request to Antigravity API
-		if errWait := e.waitForRateLimit(ctx); errWait != nil {
-			return resp, errWait
 		}
 
 		httpResp, errDo := httpClient.Do(httpReq)
@@ -804,11 +799,6 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			return nil, err
 		}
 
-		// Apply rate limiting before every HTTP request to Antigravity API
-		if errWait := e.waitForRateLimit(ctx); errWait != nil {
-			return nil, errWait
-		}
-
 		httpResp, errDo := httpClient.Do(httpReq)
 		if errDo != nil {
 			recordAPIResponseError(ctx, e.cfg, errDo)
@@ -1057,11 +1047,6 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 			AuthType:  authType,
 			AuthValue: authValue,
 		})
-
-		// Apply rate limiting before every HTTP request to Antigravity API
-		if errWait := e.waitForRateLimit(ctx); errWait != nil {
-			return cliproxyexecutor.Response{}, errWait
-		}
 
 		httpResp, errDo := httpClient.Do(httpReq)
 		if errDo != nil {
@@ -1947,4 +1932,3 @@ func is429Error(err error) bool {
 	}
 	return false
 }
-
