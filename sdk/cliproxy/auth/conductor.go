@@ -1224,16 +1224,15 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						backoffLevel = nextLevel
 					}
 					state.NextRetryAfter = next
-					state.Quota = QuotaState{
-						Exceeded:      true,
-						Reason:        "quota",
-						NextRecoverAt: next,
-						BackoffLevel:  backoffLevel,
-						QuotaType:     quotaType,
-						SkipCount:     skipCount,
-						SkipIncrement: skipIncrement,
-						RecoveryDate:  recoveryDate,
-					}
+					// Update quota fields individually to preserve other state
+					state.Quota.Exceeded = true
+					state.Quota.Reason = "quota"
+					state.Quota.NextRecoverAt = next
+					state.Quota.BackoffLevel = backoffLevel
+					state.Quota.QuotaType = quotaType
+					state.Quota.SkipCount = skipCount
+					state.Quota.SkipIncrement = skipIncrement
+					state.Quota.RecoveryDate = recoveryDate
 					suspendReason = "quota"
 					shouldSuspendModel = true
 					setModelQuota = true
