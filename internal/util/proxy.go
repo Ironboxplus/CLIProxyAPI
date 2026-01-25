@@ -12,8 +12,9 @@ import (
 )
 
 // SetProxy configures the provided HTTP client with proxy settings from the configuration.
-// It supports SOCKS5, HTTP, and HTTPS proxies. The function modifies the client's transport
-// to route requests through the configured proxy server.
+// It supports SOCKS5, HTTP, and HTTPS proxies, and also applies uTLS fingerprinting if configured.
+// The function modifies the client's transport to route requests through the configured proxy server
+// and use the specified TLS fingerprint.
 func SetProxy(cfg *config.SDKConfig, httpClient *http.Client) *http.Client {
 	if cfg == nil || httpClient == nil {
 		return httpClient
@@ -23,8 +24,14 @@ func SetProxy(cfg *config.SDKConfig, httpClient *http.Client) *http.Client {
 	if errBuild != nil {
 		log.Errorf("%v", errBuild)
 	}
+	if cfg.TLSFingerprint != "" {
+		fingerprint := TLSFingerprint(cfg.TLSFingerprint)
+		transport = CreateUTLSTransport(fingerprint, transport)
+	}
+
 	if transport != nil {
 		httpClient.Transport = transport
 	}
+
 	return httpClient
 }

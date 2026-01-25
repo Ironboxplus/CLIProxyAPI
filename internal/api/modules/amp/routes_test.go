@@ -28,7 +28,7 @@ func TestRegisterManagementRoutes(t *testing.T) {
 	defer mockProxy.Close()
 
 	// Create real proxy to mock server
-	proxy, _ := createReverseProxy(mockProxy.URL, NewStaticSecretSource(""))
+	proxy, _ := createReverseProxy(mockProxy.URL, NewStaticSecretSource(""), nil)
 	m.setProxy(proxy)
 
 	base := &handlers.BaseAPIHandler{}
