@@ -44,11 +44,8 @@ func DoKiroGoogleLogin(cfg *config.Config, options *LoginOptions) {
 		Prompt:    options.Prompt,
 	})
 	if err != nil {
-		log.Errorf("Kiro Google authentication failed: %v", err)
-		fmt.Println("\nTroubleshooting:")
-		fmt.Println("1. Make sure the protocol handler is installed")
-		fmt.Println("2. Complete the Google login in the browser")
-		fmt.Println("3. If callback fails, try: --kiro-import (after logging in via Kiro IDE)")
+		// Print the full error message which contains detailed instructions
+		fmt.Printf("\nError: %v\n", err)
 		return
 	}
 
