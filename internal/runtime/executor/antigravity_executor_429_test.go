@@ -35,7 +35,7 @@ func TestRecordRateLimitError_ShortRetryAfter(t *testing.T) {
 	executor.recordRateLimitError(&shortRetry)
 
 	// Wait for cooloff period
-	time.Sleep(6 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	// Concurrency should have decreased
 	newLimit := executor.concurrencyLimiter.GetCurrentLimit()
@@ -68,7 +68,7 @@ func TestRecordRateLimitError_LongRetryAfter(t *testing.T) {
 	executor.recordRateLimitError(&longRetry)
 
 	// Wait for cooloff period
-	time.Sleep(6 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	// Concurrency should NOT have changed
 	newLimit := executor.concurrencyLimiter.GetCurrentLimit()
@@ -100,7 +100,7 @@ func TestRecordRateLimitError_NilRetryAfter(t *testing.T) {
 	executor.recordRateLimitError(nil)
 
 	// Wait for cooloff period
-	time.Sleep(6 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	// Concurrency should have decreased (treated as rate limit)
 	newLimit := executor.concurrencyLimiter.GetCurrentLimit()
@@ -144,7 +144,7 @@ func TestRecordRateLimitError_BoundaryRetryAfter(t *testing.T) {
 			initialLimit := executor.concurrencyLimiter.GetCurrentLimit()
 			executor.concurrencyLimiter.ResetCooloff() // Reset cooloff before each test
 			executor.recordRateLimitError(&tt.retryAfter)
-			time.Sleep(6 * time.Second)
+			time.Sleep(1 * time.Second)
 			newLimit := executor.concurrencyLimiter.GetCurrentLimit()
 
 			adjusted := newLimit < initialLimit
@@ -216,7 +216,7 @@ func TestExecute_429RateLimitWithShortRetryAfter(t *testing.T) {
 		t.Error("Expected error from first 429 response")
 	}
 
-	time.Sleep(6 * time.Second)
+	time.Sleep(1 * time.Second)
 	newLimit := executor.concurrencyLimiter.GetCurrentLimit()
 
 	// Concurrency should have decreased due to short retry-after
@@ -275,7 +275,7 @@ func TestExecute_429QuotaExhaustedWithLongRetryAfter(t *testing.T) {
 		t.Error("Expected error from quota exhausted 429 response")
 	}
 
-	time.Sleep(6 * time.Second)
+	time.Sleep(1 * time.Second)
 	newLimit := executor.concurrencyLimiter.GetCurrentLimit()
 
 	// Concurrency should NOT have changed due to long retry-after
@@ -333,7 +333,7 @@ func TestExecuteStream_429Handling(t *testing.T) {
 		t.Error("Expected error from streaming 429 response")
 	}
 
-	time.Sleep(6 * time.Second)
+	time.Sleep(1 * time.Second)
 	newLimit := executor.concurrencyLimiter.GetCurrentLimit()
 
 	// Concurrency should have decreased (45s < 5min)
@@ -390,7 +390,7 @@ func TestCountTokens_429Handling(t *testing.T) {
 		t.Error("Expected error from count tokens 429 response")
 	}
 
-	time.Sleep(6 * time.Second)
+	time.Sleep(1 * time.Second)
 	newLimit := executor.concurrencyLimiter.GetCurrentLimit()
 
 	// Concurrency should NOT have changed (700s > 5min = quota exhausted)

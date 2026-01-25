@@ -223,7 +223,7 @@ func TestAntigravityExecutor_AdaptiveConcurrencyOn429(t *testing.T) {
 	}
 
 	// Wait for adaptive adjustment (5s cooloff + buffer)
-	time.Sleep(6 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	decreasedLimit := executor.concurrencyLimiter.GetCurrentLimit()
 	t.Logf("Concurrency limit after 429 errors: %d", decreasedLimit)
@@ -239,7 +239,7 @@ func TestAntigravityExecutor_AdaptiveConcurrencyOn429(t *testing.T) {
 	}
 
 	// Wait for another cooloff period
-	time.Sleep(6 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	// Limit should gradually increase after successes
 	increasedLimit := executor.concurrencyLimiter.GetCurrentLimit()
@@ -345,3 +345,4 @@ func TestAntigravityExecutor_CombinedRateAndConcurrencyLimiting(t *testing.T) {
 		t.Logf("Note: Requests completed faster than expected (%v), rate limiting may need tuning", elapsed)
 	}
 }
+
