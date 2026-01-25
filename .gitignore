@@ -25,6 +25,9 @@ static/*
 auths/*
 !auths/.gitkeep
 
+# Scripts (exclude from repo)
+scripts/
+
 # Documentation
 docs/*
 AGENTS.md
