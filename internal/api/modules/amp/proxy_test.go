@@ -37,7 +37,7 @@ func mkResp(status int, hdr http.Header, body []byte) *http.Response {
 }
 
 func TestCreateReverseProxy_ValidURL(t *testing.T) {
-	proxy, err := createReverseProxy("http://example.com", NewStaticSecretSource("key"))
+	proxy, err := createReverseProxy("http://example.com", NewStaticSecretSource("key"), nil)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -47,14 +47,14 @@ func TestCreateReverseProxy_ValidURL(t *testing.T) {
 }
 
 func TestCreateReverseProxy_InvalidURL(t *testing.T) {
-	_, err := createReverseProxy("://invalid", NewStaticSecretSource("key"))
+	_, err := createReverseProxy("://invalid", NewStaticSecretSource("key"), nil)
 	if err == nil {
 		t.Fatal("expected error for invalid URL")
 	}
 }
 
 func TestModifyResponse_GzipScenarios(t *testing.T) {
-	proxy, err := createReverseProxy("http://example.com", NewStaticSecretSource("k"))
+	proxy, err := createReverseProxy("http://example.com", NewStaticSecretSource("k"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestModifyResponse_GzipScenarios(t *testing.T) {
 }
 
 func TestModifyResponse_UpdatesContentLengthHeader(t *testing.T) {
-	proxy, err := createReverseProxy("http://example.com", NewStaticSecretSource("k"))
+	proxy, err := createReverseProxy("http://example.com", NewStaticSecretSource("k"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestModifyResponse_UpdatesContentLengthHeader(t *testing.T) {
 }
 
 func TestModifyResponse_SkipsStreamingResponses(t *testing.T) {
-	proxy, err := createReverseProxy("http://example.com", NewStaticSecretSource("k"))
+	proxy, err := createReverseProxy("http://example.com", NewStaticSecretSource("k"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestModifyResponse_SkipsStreamingResponses(t *testing.T) {
 }
 
 func TestModifyResponse_DecompressesChunkedJSON(t *testing.T) {
-	proxy, err := createReverseProxy("http://example.com", NewStaticSecretSource("k"))
+	proxy, err := createReverseProxy("http://example.com", NewStaticSecretSource("k"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestReverseProxy_InjectsHeaders(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy, err := createReverseProxy(upstream.URL, NewStaticSecretSource("secret"))
+	proxy, err := createReverseProxy(upstream.URL, NewStaticSecretSource("secret"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestReverseProxy_EmptySecret(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy, err := createReverseProxy(upstream.URL, NewStaticSecretSource(""))
+	proxy, err := createReverseProxy(upstream.URL, NewStaticSecretSource(""), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestReverseProxy_StripsClientCredentialsFromHeadersAndQuery(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy, err := createReverseProxy(upstream.URL, NewStaticSecretSource("upstream"))
+	proxy, err := createReverseProxy(upstream.URL, NewStaticSecretSource("upstream"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +392,7 @@ func TestReverseProxy_InjectsMappedSecret_FromRequestContext(t *testing.T) {
 		},
 	})
 
-	proxy, err := createReverseProxy(upstream.URL, mapped)
+	proxy, err := createReverseProxy(upstream.URL, mapped, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +437,7 @@ func TestReverseProxy_MappedSecret_FallsBackToDefault(t *testing.T) {
 		},
 	})
 
-	proxy, err := createReverseProxy(upstream.URL, mapped)
+	proxy, err := createReverseProxy(upstream.URL, mapped, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +465,7 @@ func TestReverseProxy_MappedSecret_FallsBackToDefault(t *testing.T) {
 
 func TestReverseProxy_ErrorHandler(t *testing.T) {
 	// Point proxy to a non-routable address to trigger error
-	proxy, err := createReverseProxy("http://127.0.0.1:1", NewStaticSecretSource(""))
+	proxy, err := createReverseProxy("http://127.0.0.1:1", NewStaticSecretSource(""), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -501,7 +501,7 @@ func TestReverseProxy_FullRoundTrip_Gzip(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy, err := createReverseProxy(upstream.URL, NewStaticSecretSource("key"))
+	proxy, err := createReverseProxy(upstream.URL, NewStaticSecretSource("key"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -533,7 +533,7 @@ func TestReverseProxy_FullRoundTrip_PlainJSON(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy, err := createReverseProxy(upstream.URL, NewStaticSecretSource("key"))
+	proxy, err := createReverseProxy(upstream.URL, NewStaticSecretSource("key"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

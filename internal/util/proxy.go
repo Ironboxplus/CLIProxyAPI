@@ -15,13 +15,15 @@ import (
 )
 
 // SetProxy configures the provided HTTP client with proxy settings from the configuration.
-// It supports SOCKS5, HTTP, and HTTPS proxies. The function modifies the client's transport
-// to route requests through the configured proxy server.
+// It supports SOCKS5, HTTP, and HTTPS proxies, and also applies uTLS fingerprinting if configured.
+// The function modifies the client's transport to route requests through the configured proxy server
+// and use the specified TLS fingerprint.
 func SetProxy(cfg *config.SDKConfig, httpClient *http.Client) *http.Client {
 	var transport *http.Transport
+
 	// Attempt to parse the proxy URL from the configuration.
 	proxyURL, errParse := url.Parse(cfg.ProxyURL)
-	if errParse == nil {
+	if errParse == nil && cfg.ProxyURL != "" {
 		// Handle different proxy schemes.
 		if proxyURL.Scheme == "socks5" {
 			// Configure SOCKS5 proxy with optional authentication.
@@ -34,22 +36,30 @@ func SetProxy(cfg *config.SDKConfig, httpClient *http.Client) *http.Client {
 			dialer, errSOCKS5 := proxy.SOCKS5("tcp", proxyURL.Host, proxyAuth, proxy.Direct)
 			if errSOCKS5 != nil {
 				log.Errorf("create SOCKS5 dialer failed: %v", errSOCKS5)
-				return httpClient
-			}
-			// Set up a custom transport using the SOCKS5 dialer.
-			transport = &http.Transport{
-				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					return dialer.Dial(network, addr)
-				},
+			} else {
+				// Set up a custom transport using the SOCKS5 dialer.
+				transport = &http.Transport{
+					DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+						return dialer.Dial(network, addr)
+					},
+				}
 			}
 		} else if proxyURL.Scheme == "http" || proxyURL.Scheme == "https" {
 			// Configure HTTP or HTTPS proxy.
 			transport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
 		}
 	}
+
+	// Apply uTLS fingerprinting if configured
+	if cfg.TLSFingerprint != "" {
+		fingerprint := TLSFingerprint(cfg.TLSFingerprint)
+		transport = CreateUTLSTransport(fingerprint, transport)
+	}
+
 	// If a new transport was created, apply it to the HTTP client.
 	if transport != nil {
 		httpClient.Transport = transport
 	}
+
 	return httpClient
 }

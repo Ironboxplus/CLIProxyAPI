@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -56,14 +58,24 @@ func (rc *readCloser) Read(p []byte) (int, error) { return rc.r.Read(p) }
 func (rc *readCloser) Close() error               { return rc.c.Close() }
 
 // createReverseProxy creates a reverse proxy handler for Amp upstream
-// with automatic gzip decompression via ModifyResponse
-func createReverseProxy(upstreamURL string, secretSource SecretSource) (*httputil.ReverseProxy, error) {
+// with automatic gzip decompression via ModifyResponse and optional uTLS fingerprinting
+func createReverseProxy(upstreamURL string, secretSource SecretSource, sdkConfig *config.SDKConfig) (*httputil.ReverseProxy, error) {
 	parsed, err := url.Parse(upstreamURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid amp upstream url: %w", err)
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(parsed)
+
+	// Apply uTLS fingerprinting if configured
+	if sdkConfig != nil && sdkConfig.TLSFingerprint != "" && proxy.Transport != nil {
+		if transport, ok := proxy.Transport.(*http.Transport); ok {
+			fingerprint := util.TLSFingerprint(sdkConfig.TLSFingerprint)
+			proxy.Transport = util.CreateUTLSTransport(fingerprint, transport)
+			log.Debugf("amp proxy: uTLS fingerprinting enabled with profile: %s", sdkConfig.TLSFingerprint)
+		}
+	}
+
 	originalDirector := proxy.Director
 
 	// Modify outgoing requests to inject API key and fix routing
