@@ -9,6 +9,15 @@ type SDKConfig struct {
 	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
+	// TLSFingerprint specifies the TLS fingerprint to use for requests.
+	// Options: chrome_120, chrome_131, chrome_133, chrome_latest,
+	// firefox_102, firefox_105, firefox_120, firefox_latest,
+	// safari_16, safari_latest, edge_85, edge_latest,
+	// ios_11, ios_12, ios_13, ios_14, ios_latest,
+	// android_11, android_latest
+	// Default: "" (disabled) or "default" (chrome_latest)
+	TLSFingerprint string `yaml:"tls-fingerprint" json:"tls-fingerprint"`
+
 	// ForceModelPrefix requires explicit model prefixes (e.g., "teamA/gemini-3-pro-preview")
 	// to target prefixed credentials. When false, unprefixed model requests may use prefixed
 	// credentials as well.

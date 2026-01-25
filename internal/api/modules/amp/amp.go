@@ -41,6 +41,9 @@ type AmpModule struct {
 	// configMu protects lastConfig for partial reload comparison
 	configMu   sync.RWMutex
 	lastConfig *config.AmpCode
+
+	// sdkConfig holds SDK configuration including TLS fingerprint settings
+	sdkConfig *config.SDKConfig
 }
 
 // New creates a new Amp routing module with the given options.
@@ -212,13 +215,16 @@ func (m *AmpModule) OnConfigUpdated(cfg *config.Config) error {
 	}
 
 	if m.enabled {
+		// Update SDK config for uTLS settings
+		m.sdkConfig = &cfg.SDKConfig
+
 		// Check upstream URL change - now supports hot-reload
 		if newUpstreamURL == "" && oldUpstreamURL != "" {
 			m.setProxy(nil)
 			m.enabled = false
 		} else if oldUpstreamURL != "" && newUpstreamURL != oldUpstreamURL && newUpstreamURL != "" {
 			// Recreate proxy with new URL
-			proxy, err := createReverseProxy(newUpstreamURL, m.secretSource)
+			proxy, err := createReverseProxy(newUpstreamURL, m.secretSource, m.sdkConfig)
 			if err != nil {
 				log.Errorf("amp config: failed to create proxy for new upstream URL %s: %v", newUpstreamURL, err)
 			} else {
@@ -277,7 +283,7 @@ func (m *AmpModule) enableUpstreamProxy(upstreamURL string, settings *config.Amp
 		m.secretSource = mappedSource
 	}
 
-	proxy, err := createReverseProxy(upstreamURL, m.secretSource)
+	proxy, err := createReverseProxy(upstreamURL, m.secretSource, m.sdkConfig)
 	if err != nil {
 		return err
 	}

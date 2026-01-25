@@ -70,6 +70,19 @@ usage-statistics-enabled: false
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 proxy-url: ''
 
+# TLS fingerprinting settings for outbound HTTP requests.
+# Mimics real browser TLS handshakes to avoid detection/blocking.
+# Available options:
+#   - chrome_120, chrome_131, chrome_133, chrome_latest (default when enabled)
+#   - firefox_102, firefox_105, firefox_120, firefox_latest
+#   - safari_16, safari_latest
+#   - edge_85, edge_latest
+#   - ios_11, ios_12, ios_13, ios_14, ios_latest
+#   - android_11, android_latest
+#   - "" (empty/disabled, uses standard Go TLS)
+# Example: tls-fingerprint: "chrome_latest"
+tls-fingerprint: ""
+
 # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).
 force-model-prefix: false
 
