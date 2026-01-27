@@ -433,9 +433,6 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if auth.Quota.SkipCount > 0 {
 		entry["skip_count"] = auth.Quota.SkipCount
 	}
-	if auth.Quota.SkipIncrement > 0 {
-		entry["skip_increment"] = auth.Quota.SkipIncrement
-	}
 	if auth.Quota.QuotaType != 0 {
 		quotaTypeStr := "unknown"
 		switch auth.Quota.QuotaType {
@@ -687,7 +684,7 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
-// ResetAuthSkip resets the SkipCount and SkipIncrement for a specified auth entry.
+// ResetAuthSkip resets the SkipCount for a specified auth entry.
 // It accepts "name" as a query parameter which can be either the auth ID or file name.
 func (h *Handler) ResetAuthSkip(c *gin.Context) {
 	if h.authManager == nil {
@@ -718,12 +715,10 @@ func (h *Handler) ResetAuthSkip(c *gin.Context) {
 
 	// Store previous values for response
 	prevSkipCount := targetAuth.Quota.SkipCount
-	prevSkipIncrement := targetAuth.Quota.SkipIncrement
 	prevBackoffLevel := targetAuth.Quota.BackoffLevel
 
 	// Reset skip values
 	targetAuth.Quota.SkipCount = 0
-	targetAuth.Quota.SkipIncrement = 0
 	targetAuth.Quota.BackoffLevel = 0
 
 	// Update the auth entry
@@ -738,14 +733,12 @@ func (h *Handler) ResetAuthSkip(c *gin.Context) {
 		"id":     targetAuth.ID,
 		"name":   targetAuth.FileName,
 		"previous": gin.H{
-			"skip_count":     prevSkipCount,
-			"skip_increment": prevSkipIncrement,
-			"backoff_level":  prevBackoffLevel,
+			"skip_count":    prevSkipCount,
+			"backoff_level": prevBackoffLevel,
 		},
 		"current": gin.H{
-			"skip_count":     0,
-			"skip_increment": 0,
-			"backoff_level":  0,
+			"skip_count":    0,
+			"backoff_level": 0,
 		},
 	})
 }
