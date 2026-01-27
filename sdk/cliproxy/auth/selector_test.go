@@ -176,7 +176,7 @@ func TestRoundRobinSelectorPick_Concurrent(t *testing.T) {
 	}
 }
 
-// Tests for 429 exponential backoff with SkipIncrement logic
+// Tests for 429 handling with SkipCount logic
 
 func TestIsAuthBlockedForModel_SkipCount(t *testing.T) {
 	t.Parallel()
@@ -446,9 +446,9 @@ func TestGetAvailableAuths_LeastSkipFallback(t *testing.T) {
 
 	// All auths have SkipCount > 0
 	auths := []*Auth{
-		{ID: "auth1", Provider: "gemini", Quota: QuotaState{SkipCount: 5, SkipIncrement: 4}},
-		{ID: "auth2", Provider: "gemini", Quota: QuotaState{SkipCount: 2, SkipIncrement: 2}},
-		{ID: "auth3", Provider: "gemini", Quota: QuotaState{SkipCount: 8, SkipIncrement: 8}},
+		{ID: "auth1", Provider: "gemini", Quota: QuotaState{SkipCount: 5}},
+		{ID: "auth2", Provider: "gemini", Quota: QuotaState{SkipCount: 2}},
+		{ID: "auth3", Provider: "gemini", Quota: QuotaState{SkipCount: 8}},
 	}
 
 	available, err := getAvailableAuths(auths, "gemini", "", now)
@@ -732,124 +732,6 @@ func TestAuthPriority(t *testing.T) {
 				t.Errorf("expected priority=%d, got=%d", tt.expected, got)
 			}
 		})
-	}
-}
-
-func TestSkipIncrementExponentialBackoff(t *testing.T) {
-	t.Parallel()
-
-	// Simulate multiple 429 failures and verify exponential backoff
-	auth := &Auth{
-		ID:       "test",
-		Provider: "gemini",
-		ModelStates: map[string]*ModelState{
-			"model1": {
-				Status: StatusActive,
-				Quota:  QuotaState{},
-			},
-		},
-	}
-
-	state := auth.ModelStates["model1"]
-
-	// Simulate first 429
-	prevSkipCount := state.Quota.SkipCount
-	prevSkipIncrement := state.Quota.SkipIncrement
-	if prevSkipIncrement == 0 {
-		prevSkipIncrement = 1
-	}
-
-	newSkipCount := prevSkipCount + prevSkipIncrement
-	newSkipIncrement := prevSkipIncrement * 2
-	if newSkipIncrement > 16 {
-		newSkipIncrement = 16
-	}
-
-	state.Quota.SkipCount = newSkipCount
-	state.Quota.SkipIncrement = newSkipIncrement
-
-	// After first 429: SkipCount=1, SkipIncrement=2
-	if state.Quota.SkipCount != 1 {
-		t.Errorf("after 1st 429: expected SkipCount=1, got=%d", state.Quota.SkipCount)
-	}
-	if state.Quota.SkipIncrement != 2 {
-		t.Errorf("after 1st 429: expected SkipIncrement=2, got=%d", state.Quota.SkipIncrement)
-	}
-
-	// Simulate second 429
-	prevSkipCount = state.Quota.SkipCount
-	prevSkipIncrement = state.Quota.SkipIncrement
-	newSkipCount = prevSkipCount + prevSkipIncrement
-	newSkipIncrement = prevSkipIncrement * 2
-	if newSkipIncrement > 16 {
-		newSkipIncrement = 16
-	}
-	state.Quota.SkipCount = newSkipCount
-	state.Quota.SkipIncrement = newSkipIncrement
-
-	// After second 429: SkipCount=1+2=3, SkipIncrement=4
-	if state.Quota.SkipCount != 3 {
-		t.Errorf("after 2nd 429: expected SkipCount=3, got=%d", state.Quota.SkipCount)
-	}
-	if state.Quota.SkipIncrement != 4 {
-		t.Errorf("after 2nd 429: expected SkipIncrement=4, got=%d", state.Quota.SkipIncrement)
-	}
-
-	// Simulate third 429
-	prevSkipCount = state.Quota.SkipCount
-	prevSkipIncrement = state.Quota.SkipIncrement
-	newSkipCount = prevSkipCount + prevSkipIncrement
-	newSkipIncrement = prevSkipIncrement * 2
-	if newSkipIncrement > 16 {
-		newSkipIncrement = 16
-	}
-	state.Quota.SkipCount = newSkipCount
-	state.Quota.SkipIncrement = newSkipIncrement
-
-	// After third 429: SkipCount=3+4=7, SkipIncrement=8
-	if state.Quota.SkipCount != 7 {
-		t.Errorf("after 3rd 429: expected SkipCount=7, got=%d", state.Quota.SkipCount)
-	}
-	if state.Quota.SkipIncrement != 8 {
-		t.Errorf("after 3rd 429: expected SkipIncrement=8, got=%d", state.Quota.SkipIncrement)
-	}
-
-	// Simulate fourth 429
-	prevSkipCount = state.Quota.SkipCount
-	prevSkipIncrement = state.Quota.SkipIncrement
-	newSkipCount = prevSkipCount + prevSkipIncrement
-	newSkipIncrement = prevSkipIncrement * 2
-	if newSkipIncrement > 16 {
-		newSkipIncrement = 16
-	}
-	state.Quota.SkipCount = newSkipCount
-	state.Quota.SkipIncrement = newSkipIncrement
-
-	// After fourth 429: SkipCount=7+8=15, SkipIncrement=16 (capped)
-	if state.Quota.SkipCount != 15 {
-		t.Errorf("after 4th 429: expected SkipCount=15, got=%d", state.Quota.SkipCount)
-	}
-	if state.Quota.SkipIncrement != 16 {
-		t.Errorf("after 4th 429: expected SkipIncrement=16 (capped), got=%d", state.Quota.SkipIncrement)
-	}
-
-	// Simulate fifth 429 - increment should stay at 16
-	prevSkipCount = state.Quota.SkipCount
-	prevSkipIncrement = state.Quota.SkipIncrement
-	newSkipCount = prevSkipCount + prevSkipIncrement
-	newSkipIncrement = prevSkipIncrement * 2
-	if newSkipIncrement > 16 {
-		newSkipIncrement = 16
-	}
-	state.Quota.SkipCount = newSkipCount
-	state.Quota.SkipIncrement = newSkipIncrement
-
-	// After fifth 429: SkipCount=15+16=31, SkipIncrement=16 (stays capped)
-	if state.Quota.SkipCount != 31 {
-		t.Errorf("after 5th 429: expected SkipCount=31, got=%d", state.Quota.SkipCount)
-	}
-	if state.Quota.SkipIncrement != 16 {
-		t.Errorf("after 5th 429: expected SkipIncrement=16, got=%d", state.Quota.SkipIncrement)
 	}
 }
 

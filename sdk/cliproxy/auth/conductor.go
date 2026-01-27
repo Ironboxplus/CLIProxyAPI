@@ -1208,28 +1208,16 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						quotaType = QuotaTypeRateLimit
 					}
 
-					// Apply SkipIncrement exponential backoff (only for RateLimit, not Exhausted)
-					var skipCount, skipIncrement int
+					// Simple skip count logic without exponential backoff
+					var skipCount int
 					var recoveryDate time.Time
 
 					if quotaType == QuotaTypeRateLimit {
-						// Use SkipIncrement for gradual backoff
-						skipIncrement = state.Quota.SkipIncrement
-						if skipIncrement == 0 {
-							skipIncrement = 1
-						}
-						skipCount = state.Quota.SkipCount + skipIncrement
-						// Double SkipIncrement, but cap at 16
-						if skipIncrement < 16 {
-							skipIncrement *= 2
-							if skipIncrement > 16 {
-								skipIncrement = 16
-							}
-						}
+						// Fixed increment for rate limit
+						skipCount = state.Quota.SkipCount + 1
 					} else {
 						// QuotaTypeExhausted: use RecoveryDate, no SkipCount
 						skipCount = 0
-						skipIncrement = 0
 						if result.RetryAfter != nil {
 							recoveryDate = now.Add(*result.RetryAfter)
 						}
@@ -1254,7 +1242,6 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					state.Quota.BackoffLevel = backoffLevel
 					state.Quota.QuotaType = quotaType
 					state.Quota.SkipCount = skipCount
-					state.Quota.SkipIncrement = skipIncrement
 					state.Quota.RecoveryDate = recoveryDate
 					suspendReason = "quota"
 					shouldSuspendModel = true
@@ -1422,7 +1409,6 @@ func clearAuthStateOnSuccess(auth *Auth, now time.Time) {
 	auth.Quota.NextRecoverAt = time.Time{}
 	auth.Quota.BackoffLevel = 0
 	auth.Quota.SkipCount = 0
-	auth.Quota.SkipIncrement = 0
 	auth.Quota.QuotaType = QuotaTypeUnknown
 	auth.Quota.RecoveryDate = time.Time{}
 	auth.LastError = nil
@@ -1527,22 +1513,10 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 				// Long retry -> quota exhausted, use RecoveryDate
 				auth.Quota.QuotaType = QuotaTypeExhausted
 				auth.Quota.RecoveryDate = next
-				// Don't increment SkipCount for exhausted quota
 			} else {
 				// Short retry -> rate limit, use SkipCount
 				auth.Quota.QuotaType = QuotaTypeRateLimit
-				// Apply SkipIncrement exponential backoff
-				if auth.Quota.SkipIncrement == 0 {
-					auth.Quota.SkipIncrement = 1
-				}
-				auth.Quota.SkipCount += auth.Quota.SkipIncrement
-				// Double SkipIncrement, but cap at 16
-				if auth.Quota.SkipIncrement < 16 {
-					auth.Quota.SkipIncrement *= 2
-					if auth.Quota.SkipIncrement > 16 {
-						auth.Quota.SkipIncrement = 16
-					}
-				}
+				auth.Quota.SkipCount++
 			}
 		} else {
 			// No retryAfter provided, use backoff
@@ -1553,16 +1527,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			auth.Quota.BackoffLevel = nextLevel
 			// Use rate limit type with SkipCount
 			auth.Quota.QuotaType = QuotaTypeRateLimit
-			if auth.Quota.SkipIncrement == 0 {
-				auth.Quota.SkipIncrement = 1
-			}
-			auth.Quota.SkipCount += auth.Quota.SkipIncrement
-			if auth.Quota.SkipIncrement < 16 {
-				auth.Quota.SkipIncrement *= 2
-				if auth.Quota.SkipIncrement > 16 {
-					auth.Quota.SkipIncrement = 16
-				}
-			}
+			auth.Quota.SkipCount++
 		}
 		auth.Quota.NextRecoverAt = next
 		auth.NextRetryAfter = next
