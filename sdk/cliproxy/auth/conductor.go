@@ -1271,7 +1271,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					if result.RetryAfter != nil {
 						next = now.Add(*result.RetryAfter)
 					} else {
-						cooldown, nextLevel := nextQuotaCooldown(backoffLevel, quotaCooldownDisabledForAuth(auth))
+						cooldown, nextLevel := nextQuotaCooldown(backoffLevel, auth)
 						if cooldown > 0 {
 							next = now.Add(cooldown)
 						}
@@ -1548,7 +1548,8 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		if retryAfter != nil {
 			next = now.Add(*retryAfter)
 		} else {
-			cooldown, nextLevel := nextQuotaCooldown(auth.Quota.BackoffLevel, quotaCooldownDisabledForAuth(auth))
+			// No retryAfter provided, use backoff
+			cooldown, nextLevel := nextQuotaCooldown(auth.Quota.BackoffLevel, auth)
 			if cooldown > 0 {
 				next = now.Add(cooldown)
 			}
@@ -1571,9 +1572,15 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 }
 
 // nextQuotaCooldown returns the next cooldown duration and updated backoff level for repeated quota errors.
-func nextQuotaCooldown(prevLevel int, disableCooling bool) (time.Duration, int) {
+func nextQuotaCooldown(prevLevel int, auth ...*Auth) (time.Duration, int) {
 	if prevLevel < 0 {
 		prevLevel = 0
+	}
+	var disableCooling bool
+	if len(auth) > 0 && auth[0] != nil {
+		disableCooling = quotaCooldownDisabledForAuth(auth[0])
+	} else {
+		disableCooling = quotaCooldownDisabled.Load()
 	}
 	if disableCooling {
 		return 0, prevLevel
