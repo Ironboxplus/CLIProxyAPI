@@ -58,10 +58,7 @@ var (
 
 // AntigravityExecutor proxies requests to the antigravity upstream.
 type AntigravityExecutor struct {
-	cfg                *config.Config
-	rateLimiter        *util.TokenBucketRateLimiter
-	concurrencyLimiter *util.ConcurrencyLimiter
-	initOnce           sync.Once
+	cfg *config.Config
 }
 
 // NewAntigravityExecutor creates a new Antigravity executor instance.
@@ -72,105 +69,7 @@ type AntigravityExecutor struct {
 // Returns:
 //   - *AntigravityExecutor: A new Antigravity executor instance
 func NewAntigravityExecutor(cfg *config.Config) *AntigravityExecutor {
-	return &AntigravityExecutor{
-		cfg:                cfg,
-		rateLimiter:        nil, // will be initialized lazily
-		concurrencyLimiter: nil, // will be initialized lazily
-	}
-}
-
-// initRateLimiter initializes the rate limiter based on configuration.
-// This is called once on the first request.
-func (e *AntigravityExecutor) initRateLimiter() {
-	e.initOnce.Do(func() {
-		if e.cfg != nil && e.cfg.AntigravityRateLimit.Enabled {
-			rps := e.cfg.AntigravityRateLimit.RequestsPerSecond
-			burst := e.cfg.AntigravityRateLimit.Burst
-
-			// Set defaults if not configured
-			if rps <= 0 {
-				rps = 1.0 // default: 1 request per second
-			}
-			if burst <= 0 {
-				burst = 1 // default: no burst
-			}
-
-			e.rateLimiter = util.NewTokenBucketRateLimiter(rps, burst)
-			log.Infof("antigravity executor: rate limiter initialized with %.2f req/s, burst=%d", rps, burst)
-
-			// Initialize concurrency limiter if configured
-			maxConcurrency := e.cfg.AntigravityRateLimit.MaxConcurrency
-			minConcurrency := e.cfg.AntigravityRateLimit.MinConcurrency
-
-			if maxConcurrency > 0 {
-				if minConcurrency <= 0 {
-					minConcurrency = 1
-				}
-				e.concurrencyLimiter = util.NewConcurrencyLimiter(maxConcurrency, minConcurrency)
-				log.Infof("antigravity executor: concurrency limiter initialized with max=%d, min=%d", maxConcurrency, minConcurrency)
-			} else {
-				// Create a disabled concurrency limiter
-				e.concurrencyLimiter = util.NewConcurrencyLimiter(0, 0)
-			}
-		} else {
-			// Create disabled limiters
-			e.rateLimiter = util.NewTokenBucketRateLimiter(0, 0)
-			e.concurrencyLimiter = util.NewConcurrencyLimiter(0, 0)
-		}
-	})
-}
-
-// waitForRateLimit waits for rate limiter permission before proceeding.
-// Returns an error if context is cancelled.
-func (e *AntigravityExecutor) waitForRateLimit(ctx context.Context) error {
-	e.initRateLimiter()
-	if e.rateLimiter == nil || e.rateLimiter.IsDisabled() {
-		return nil
-	}
-	return e.rateLimiter.Wait(ctx)
-}
-
-// acquireConcurrencySlot acquires a concurrency slot before making a request.
-// Returns an error if context is cancelled.
-func (e *AntigravityExecutor) acquireConcurrencySlot(ctx context.Context) error {
-	e.initRateLimiter()
-	if e.concurrencyLimiter == nil || e.concurrencyLimiter.IsDisabled() {
-		return nil
-	}
-	return e.concurrencyLimiter.Acquire(ctx)
-}
-
-// releaseConcurrencySlot releases a concurrency slot after request completes.
-// success indicates whether the request succeeded (no 429 error).
-func (e *AntigravityExecutor) releaseConcurrencySlot(success bool) {
-	e.initRateLimiter()
-	if e.concurrencyLimiter == nil || e.concurrencyLimiter.IsDisabled() {
-		return
-	}
-	e.concurrencyLimiter.Release(success)
-}
-
-// recordRateLimitError records a 429 error for adaptive limiting.
-// Only adjusts concurrency for true rate limits (retry-after < 5 min).
-// Quota exhausted (retry-after > 5 min) should just switch accounts, not reduce concurrency.
-func (e *AntigravityExecutor) recordRateLimitError(retryAfter *time.Duration) {
-	e.initRateLimiter()
-	if e.concurrencyLimiter == nil || e.concurrencyLimiter.IsDisabled() {
-		log.Warnf("antigravity executor: recordRateLimitError called but limiter is nil or disabled")
-		return
-	}
-
-	// Check if this is quota exhausted (long retry-after) vs rate limit (short retry-after)
-	if retryAfter != nil && *retryAfter > 5*time.Minute {
-		// Don't adjust concurrency, just let conductor switch to another account
-		log.Infof("antigravity executor: quota exhausted (retry after %v), not adjusting concurrency", *retryAfter)
-		return
-	}
-
-	// True rate limit - requests too frequent
-	// Adjust concurrency to slow down
-	log.Infof("antigravity executor: recording 429 rate limit error for adaptive limiting")
-	e.concurrencyLimiter.RecordRateLimitError()
+	return &AntigravityExecutor{cfg: cfg}
 }
 
 // Identifier returns the executor identifier.
@@ -210,21 +109,6 @@ func (e *AntigravityExecutor) HttpRequest(ctx context.Context, auth *cliproxyaut
 
 // Execute performs a non-streaming request to the Antigravity API.
 func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
-	// Apply rate limiting once before processing
-	if errWait := e.waitForRateLimit(ctx); errWait != nil {
-		return resp, errWait
-	}
-
-	// Acquire concurrency slot
-	if errAcquire := e.acquireConcurrencySlot(ctx); errAcquire != nil {
-		return resp, errAcquire
-	}
-	defer func() {
-		// Release slot with success flag (no 429)
-		success := err == nil || (err != nil && !is429Error(err))
-		e.releaseConcurrencySlot(success)
-	}()
-
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	isClaude := strings.Contains(strings.ToLower(baseModel), "claude")
 
@@ -264,103 +148,113 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	baseURLs := antigravityBaseURLFallbackOrder(auth)
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 
-	var lastStatus int
-	var lastBody []byte
-	var lastErr error
+	attempts := antigravityRetryAttempts(auth, e.cfg)
 
-	for idx, baseURL := range baseURLs {
-		httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, translated, false, opts.Alt, baseURL)
-		if errReq != nil {
-			err = errReq
-			return resp, err
-		}
+attemptLoop:
+	for attempt := 0; attempt < attempts; attempt++ {
+		var lastStatus int
+		var lastBody []byte
+		var lastErr error
 
-		httpResp, errDo := httpClient.Do(httpReq)
-		if errDo != nil {
-			recordAPIResponseError(ctx, e.cfg, errDo)
-			if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
-				return resp, errDo
+		for idx, baseURL := range baseURLs {
+			httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, translated, false, opts.Alt, baseURL)
+			if errReq != nil {
+				err = errReq
+				return resp, err
 			}
-			lastStatus = 0
-			lastBody = nil
-			lastErr = errDo
-			if idx+1 < len(baseURLs) {
-				log.Debugf("antigravity executor: request error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
-				continue
-			}
-			err = errDo
-			return resp, err
-		}
 
-		recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-		bodyBytes, errRead := io.ReadAll(httpResp.Body)
-		if errClose := httpResp.Body.Close(); errClose != nil {
-			log.Errorf("antigravity executor: close response body error: %v", errClose)
-		}
-		if errRead != nil {
-			recordAPIResponseError(ctx, e.cfg, errRead)
-			err = errRead
-			return resp, err
-		}
-		appendAPIResponseChunk(ctx, e.cfg, bodyBytes)
-
-		if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-			log.Debugf("antigravity executor: upstream error status: %d, body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), bodyBytes))
-			lastStatus = httpResp.StatusCode
-			lastBody = append([]byte(nil), bodyBytes...)
-			lastErr = nil
-			if httpResp.StatusCode == http.StatusTooManyRequests {
-				// Parse retry-after first to distinguish rate limit vs quota exhausted
-				var retryAfter *time.Duration
-				if parsed, parseErr := parseRetryDelay(bodyBytes); parseErr == nil && parsed != nil {
-					retryAfter = parsed
+			httpResp, errDo := httpClient.Do(httpReq)
+			if errDo != nil {
+				recordAPIResponseError(ctx, e.cfg, errDo)
+				if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
+					return resp, errDo
 				}
-				e.recordRateLimitError(retryAfter) // Record 429 for adaptive limiting
+				lastStatus = 0
+				lastBody = nil
+				lastErr = errDo
 				if idx+1 < len(baseURLs) {
+					log.Debugf("antigravity executor: request error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+					continue
+				}
+				err = errDo
+				return resp, err
+			}
+
+			recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+			bodyBytes, errRead := io.ReadAll(httpResp.Body)
+			if errClose := httpResp.Body.Close(); errClose != nil {
+				log.Errorf("antigravity executor: close response body error: %v", errClose)
+			}
+			if errRead != nil {
+				recordAPIResponseError(ctx, e.cfg, errRead)
+				err = errRead
+				return resp, err
+			}
+			appendAPIResponseChunk(ctx, e.cfg, bodyBytes)
+
+			if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+				log.Debugf("antigravity executor: upstream error status: %d, body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), bodyBytes))
+				lastStatus = httpResp.StatusCode
+				lastBody = append([]byte(nil), bodyBytes...)
+				lastErr = nil
+				if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
 					log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 					continue
 				}
+				if antigravityShouldRetryNoCapacity(httpResp.StatusCode, bodyBytes) {
+					if idx+1 < len(baseURLs) {
+						log.Debugf("antigravity executor: no capacity on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+						continue
+					}
+					if attempt+1 < attempts {
+						delay := antigravityNoCapacityRetryDelay(attempt)
+						log.Debugf("antigravity executor: no capacity for model %s, retrying in %s (attempt %d/%d)", baseModel, delay, attempt+1, attempts)
+						if errWait := antigravityWait(ctx, delay); errWait != nil {
+							return resp, errWait
+						}
+						continue attemptLoop
+					}
+				}
+				sErr := statusErr{code: httpResp.StatusCode, msg: string(bodyBytes)}
+				if httpResp.StatusCode == http.StatusTooManyRequests {
+					if retryAfter, parseErr := parseRetryDelay(bodyBytes); parseErr == nil && retryAfter != nil {
+						sErr.retryAfter = retryAfter
+					}
+				}
+				err = sErr
+				return resp, err
 			}
-			sErr := statusErr{code: httpResp.StatusCode, msg: string(bodyBytes)}
-			if httpResp.StatusCode == http.StatusTooManyRequests {
-				if retryAfter, parseErr := parseRetryDelay(bodyBytes); parseErr == nil && retryAfter != nil {
+
+			reporter.publish(ctx, parseAntigravityUsage(bodyBytes))
+			var param any
+			converted := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, bytes.Clone(opts.OriginalRequest), translated, bodyBytes, &param)
+			resp = cliproxyexecutor.Response{Payload: []byte(converted)}
+			reporter.ensurePublished(ctx)
+			return resp, nil
+		}
+
+		switch {
+		case lastStatus != 0:
+			sErr := statusErr{code: lastStatus, msg: string(lastBody)}
+			if lastStatus == http.StatusTooManyRequests {
+				if retryAfter, parseErr := parseRetryDelay(lastBody); parseErr == nil && retryAfter != nil {
 					sErr.retryAfter = retryAfter
 				}
 			}
 			err = sErr
-			return resp, err
+		case lastErr != nil:
+			err = lastErr
+		default:
+			err = statusErr{code: http.StatusServiceUnavailable, msg: "antigravity executor: no base url available"}
 		}
-
-		reporter.publish(ctx, parseAntigravityUsage(bodyBytes))
-		var param any
-		converted := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, bytes.Clone(opts.OriginalRequest), translated, bodyBytes, &param)
-		resp = cliproxyexecutor.Response{Payload: []byte(converted)}
-		reporter.ensurePublished(ctx)
-		return resp, nil
+		return resp, err
 	}
 
-	switch {
-	case lastStatus != 0:
-		sErr := statusErr{code: lastStatus, msg: string(lastBody)}
-		if lastStatus == http.StatusTooManyRequests {
-			if retryAfter, parseErr := parseRetryDelay(lastBody); parseErr == nil && retryAfter != nil {
-				sErr.retryAfter = retryAfter
-			}
-		}
-		err = sErr
-	case lastErr != nil:
-		err = lastErr
-	default:
-		err = statusErr{code: http.StatusServiceUnavailable, msg: "antigravity executor: no base url available"}
-	}
 	return resp, err
 }
 
 // executeClaudeNonStream performs a claude non-streaming request to the Antigravity API.
 func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
-	// Note: rate limiting and concurrency are already handled by Execute() caller
-	// This method is called internally, so we don't duplicate the limiting logic
-
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	token, updatedAuth, errToken := e.ensureAccessToken(ctx, auth)
@@ -395,158 +289,171 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 	baseURLs := antigravityBaseURLFallbackOrder(auth)
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 
-	var lastStatus int
-	var lastBody []byte
-	var lastErr error
+	attempts := antigravityRetryAttempts(auth, e.cfg)
 
-	for idx, baseURL := range baseURLs {
-		httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, translated, true, opts.Alt, baseURL)
-		if errReq != nil {
-			err = errReq
-			return resp, err
-		}
+attemptLoop:
+	for attempt := 0; attempt < attempts; attempt++ {
+		var lastStatus int
+		var lastBody []byte
+		var lastErr error
 
-		httpResp, errDo := httpClient.Do(httpReq)
-		if errDo != nil {
-			recordAPIResponseError(ctx, e.cfg, errDo)
-			if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
-				return resp, errDo
+		for idx, baseURL := range baseURLs {
+			httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, translated, true, opts.Alt, baseURL)
+			if errReq != nil {
+				err = errReq
+				return resp, err
 			}
-			lastStatus = 0
-			lastBody = nil
-			lastErr = errDo
-			if idx+1 < len(baseURLs) {
-				log.Debugf("antigravity executor: request error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
-				continue
-			}
-			err = errDo
-			return resp, err
-		}
-		recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-		if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-			bodyBytes, errRead := io.ReadAll(httpResp.Body)
-			if errClose := httpResp.Body.Close(); errClose != nil {
-				log.Errorf("antigravity executor: close response body error: %v", errClose)
-			}
-			if errRead != nil {
-				recordAPIResponseError(ctx, e.cfg, errRead)
-				if errors.Is(errRead, context.Canceled) || errors.Is(errRead, context.DeadlineExceeded) {
-					err = errRead
-					return resp, err
-				}
-				if errCtx := ctx.Err(); errCtx != nil {
-					err = errCtx
-					return resp, err
+
+			httpResp, errDo := httpClient.Do(httpReq)
+			if errDo != nil {
+				recordAPIResponseError(ctx, e.cfg, errDo)
+				if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
+					return resp, errDo
 				}
 				lastStatus = 0
 				lastBody = nil
-				lastErr = errRead
+				lastErr = errDo
 				if idx+1 < len(baseURLs) {
-					log.Debugf("antigravity executor: read error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+					log.Debugf("antigravity executor: request error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 					continue
 				}
-				err = errRead
+				err = errDo
 				return resp, err
 			}
-			appendAPIResponseChunk(ctx, e.cfg, bodyBytes)
-			lastStatus = httpResp.StatusCode
-			lastBody = append([]byte(nil), bodyBytes...)
-			lastErr = nil
-			if httpResp.StatusCode == http.StatusTooManyRequests {
-				// Parse retry-after first to distinguish rate limit vs quota exhausted
-				var retryAfter *time.Duration
-				if parsed, parseErr := parseRetryDelay(bodyBytes); parseErr == nil && parsed != nil {
-					retryAfter = parsed
+			recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+			if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+				bodyBytes, errRead := io.ReadAll(httpResp.Body)
+				if errClose := httpResp.Body.Close(); errClose != nil {
+					log.Errorf("antigravity executor: close response body error: %v", errClose)
 				}
-				e.recordRateLimitError(retryAfter) // Record 429 for adaptive limiting
-				if idx+1 < len(baseURLs) {
+				if errRead != nil {
+					recordAPIResponseError(ctx, e.cfg, errRead)
+					if errors.Is(errRead, context.Canceled) || errors.Is(errRead, context.DeadlineExceeded) {
+						err = errRead
+						return resp, err
+					}
+					if errCtx := ctx.Err(); errCtx != nil {
+						err = errCtx
+						return resp, err
+					}
+					lastStatus = 0
+					lastBody = nil
+					lastErr = errRead
+					if idx+1 < len(baseURLs) {
+						log.Debugf("antigravity executor: read error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+						continue
+					}
+					err = errRead
+					return resp, err
+				}
+				appendAPIResponseChunk(ctx, e.cfg, bodyBytes)
+				lastStatus = httpResp.StatusCode
+				lastBody = append([]byte(nil), bodyBytes...)
+				lastErr = nil
+				if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
 					log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 					continue
 				}
+				if antigravityShouldRetryNoCapacity(httpResp.StatusCode, bodyBytes) {
+					if idx+1 < len(baseURLs) {
+						log.Debugf("antigravity executor: no capacity on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+						continue
+					}
+					if attempt+1 < attempts {
+						delay := antigravityNoCapacityRetryDelay(attempt)
+						log.Debugf("antigravity executor: no capacity for model %s, retrying in %s (attempt %d/%d)", baseModel, delay, attempt+1, attempts)
+						if errWait := antigravityWait(ctx, delay); errWait != nil {
+							return resp, errWait
+						}
+						continue attemptLoop
+					}
+				}
+				sErr := statusErr{code: httpResp.StatusCode, msg: string(bodyBytes)}
+				if httpResp.StatusCode == http.StatusTooManyRequests {
+					if retryAfter, parseErr := parseRetryDelay(bodyBytes); parseErr == nil && retryAfter != nil {
+						sErr.retryAfter = retryAfter
+					}
+				}
+				err = sErr
+				return resp, err
 			}
-			sErr := statusErr{code: httpResp.StatusCode, msg: string(bodyBytes)}
-			if httpResp.StatusCode == http.StatusTooManyRequests {
-				if retryAfter, parseErr := parseRetryDelay(bodyBytes); parseErr == nil && retryAfter != nil {
+
+			out := make(chan cliproxyexecutor.StreamChunk)
+			go func(resp *http.Response) {
+				defer close(out)
+				defer func() {
+					if errClose := resp.Body.Close(); errClose != nil {
+						log.Errorf("antigravity executor: close response body error: %v", errClose)
+					}
+				}()
+				scanner := bufio.NewScanner(resp.Body)
+				scanner.Buffer(nil, streamScannerBuffer)
+				for scanner.Scan() {
+					line := scanner.Bytes()
+					appendAPIResponseChunk(ctx, e.cfg, line)
+
+					// Filter usage metadata for all models
+					// Only retain usage statistics in the terminal chunk
+					line = FilterSSEUsageMetadata(line)
+
+					payload := jsonPayload(line)
+					if payload == nil {
+						continue
+					}
+
+					if detail, ok := parseAntigravityStreamUsage(payload); ok {
+						reporter.publish(ctx, detail)
+					}
+
+					out <- cliproxyexecutor.StreamChunk{Payload: payload}
+				}
+				if errScan := scanner.Err(); errScan != nil {
+					recordAPIResponseError(ctx, e.cfg, errScan)
+					reporter.publishFailure(ctx)
+					out <- cliproxyexecutor.StreamChunk{Err: errScan}
+				} else {
+					reporter.ensurePublished(ctx)
+				}
+			}(httpResp)
+
+			var buffer bytes.Buffer
+			for chunk := range out {
+				if chunk.Err != nil {
+					return resp, chunk.Err
+				}
+				if len(chunk.Payload) > 0 {
+					_, _ = buffer.Write(chunk.Payload)
+					_, _ = buffer.Write([]byte("\n"))
+				}
+			}
+			resp = cliproxyexecutor.Response{Payload: e.convertStreamToNonStream(buffer.Bytes())}
+
+			reporter.publish(ctx, parseAntigravityUsage(resp.Payload))
+			var param any
+			converted := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, bytes.Clone(opts.OriginalRequest), translated, resp.Payload, &param)
+			resp = cliproxyexecutor.Response{Payload: []byte(converted)}
+			reporter.ensurePublished(ctx)
+
+			return resp, nil
+		}
+
+		switch {
+		case lastStatus != 0:
+			sErr := statusErr{code: lastStatus, msg: string(lastBody)}
+			if lastStatus == http.StatusTooManyRequests {
+				if retryAfter, parseErr := parseRetryDelay(lastBody); parseErr == nil && retryAfter != nil {
 					sErr.retryAfter = retryAfter
 				}
 			}
 			err = sErr
-			return resp, err
+		case lastErr != nil:
+			err = lastErr
+		default:
+			err = statusErr{code: http.StatusServiceUnavailable, msg: "antigravity executor: no base url available"}
 		}
-
-		out := make(chan cliproxyexecutor.StreamChunk)
-		go func(resp *http.Response) {
-			defer close(out)
-			defer func() {
-				if errClose := resp.Body.Close(); errClose != nil {
-					log.Errorf("antigravity executor: close response body error: %v", errClose)
-				}
-			}()
-			scanner := bufio.NewScanner(resp.Body)
-			scanner.Buffer(nil, streamScannerBuffer)
-			for scanner.Scan() {
-				line := scanner.Bytes()
-				appendAPIResponseChunk(ctx, e.cfg, line)
-
-				// Filter usage metadata for all models
-				// Only retain usage statistics in the terminal chunk
-				line = FilterSSEUsageMetadata(line)
-
-				payload := jsonPayload(line)
-				if payload == nil {
-					continue
-				}
-
-				if detail, ok := parseAntigravityStreamUsage(payload); ok {
-					reporter.publish(ctx, detail)
-				}
-
-				out <- cliproxyexecutor.StreamChunk{Payload: payload}
-			}
-			if errScan := scanner.Err(); errScan != nil {
-				recordAPIResponseError(ctx, e.cfg, errScan)
-				reporter.publishFailure(ctx)
-				out <- cliproxyexecutor.StreamChunk{Err: errScan}
-			} else {
-				reporter.ensurePublished(ctx)
-			}
-		}(httpResp)
-
-		var buffer bytes.Buffer
-		for chunk := range out {
-			if chunk.Err != nil {
-				return resp, chunk.Err
-			}
-			if len(chunk.Payload) > 0 {
-				_, _ = buffer.Write(chunk.Payload)
-				_, _ = buffer.Write([]byte("\n"))
-			}
-		}
-		resp = cliproxyexecutor.Response{Payload: e.convertStreamToNonStream(buffer.Bytes())}
-
-		reporter.publish(ctx, parseAntigravityUsage(resp.Payload))
-		var param any
-		converted := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, bytes.Clone(opts.OriginalRequest), translated, resp.Payload, &param)
-		resp = cliproxyexecutor.Response{Payload: []byte(converted)}
-		reporter.ensurePublished(ctx)
-
-		return resp, nil
+		return resp, err
 	}
 
-	switch {
-	case lastStatus != 0:
-		sErr := statusErr{code: lastStatus, msg: string(lastBody)}
-		if lastStatus == http.StatusTooManyRequests {
-			if retryAfter, parseErr := parseRetryDelay(lastBody); parseErr == nil && retryAfter != nil {
-				sErr.retryAfter = retryAfter
-			}
-		}
-		err = sErr
-	case lastErr != nil:
-		err = lastErr
-	default:
-		err = statusErr{code: http.StatusServiceUnavailable, msg: "antigravity executor: no base url available"}
-	}
 	return resp, err
 }
 
@@ -734,27 +641,6 @@ func (e *AntigravityExecutor) convertStreamToNonStream(stream []byte) []byte {
 
 // ExecuteStream performs a streaming request to the Antigravity API.
 func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
-	// Apply rate limiting before processing request
-	if errWait := e.waitForRateLimit(ctx); errWait != nil {
-		return nil, errWait
-	}
-
-	// Acquire concurrency slot
-	if errAcquire := e.acquireConcurrencySlot(ctx); errAcquire != nil {
-		return nil, errAcquire
-	}
-
-	// Track whether we need to release the slot
-	// We'll release it either on error before streaming starts, or in the goroutine after streaming completes
-	slotReleased := false
-	defer func() {
-		if !slotReleased && err != nil {
-			// Error occurred before streaming started, release slot
-			success := !is429Error(err)
-			e.releaseConcurrencySlot(success)
-		}
-	}()
-
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	ctx = context.WithValue(ctx, "alt", "")
@@ -791,153 +677,160 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	baseURLs := antigravityBaseURLFallbackOrder(auth)
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 
-	var lastStatus int
-	var lastBody []byte
-	var lastErr error
+	attempts := antigravityRetryAttempts(auth, e.cfg)
 
-	for idx, baseURL := range baseURLs {
-		httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, translated, true, opts.Alt, baseURL)
-		if errReq != nil {
-			err = errReq
-			return nil, err
-		}
+attemptLoop:
+	for attempt := 0; attempt < attempts; attempt++ {
+		var lastStatus int
+		var lastBody []byte
+		var lastErr error
 
-		httpResp, errDo := httpClient.Do(httpReq)
-		if errDo != nil {
-			recordAPIResponseError(ctx, e.cfg, errDo)
-			if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
-				return nil, errDo
+		for idx, baseURL := range baseURLs {
+			httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, translated, true, opts.Alt, baseURL)
+			if errReq != nil {
+				err = errReq
+				return nil, err
 			}
-			lastStatus = 0
-			lastBody = nil
-			lastErr = errDo
-			if idx+1 < len(baseURLs) {
-				log.Debugf("antigravity executor: request error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
-				continue
-			}
-			err = errDo
-			return nil, err
-		}
-		recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-		if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-			bodyBytes, errRead := io.ReadAll(httpResp.Body)
-			if errClose := httpResp.Body.Close(); errClose != nil {
-				log.Errorf("antigravity executor: close response body error: %v", errClose)
-			}
-			if errRead != nil {
-				recordAPIResponseError(ctx, e.cfg, errRead)
-				if errors.Is(errRead, context.Canceled) || errors.Is(errRead, context.DeadlineExceeded) {
-					err = errRead
-					return nil, err
-				}
-				if errCtx := ctx.Err(); errCtx != nil {
-					err = errCtx
-					return nil, err
+			httpResp, errDo := httpClient.Do(httpReq)
+			if errDo != nil {
+				recordAPIResponseError(ctx, e.cfg, errDo)
+				if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
+					return nil, errDo
 				}
 				lastStatus = 0
 				lastBody = nil
-				lastErr = errRead
+				lastErr = errDo
 				if idx+1 < len(baseURLs) {
-					log.Debugf("antigravity executor: read error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+					log.Debugf("antigravity executor: request error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 					continue
 				}
-				err = errRead
+				err = errDo
 				return nil, err
 			}
-			appendAPIResponseChunk(ctx, e.cfg, bodyBytes)
-			lastStatus = httpResp.StatusCode
-			lastBody = append([]byte(nil), bodyBytes...)
-			lastErr = nil
-			if httpResp.StatusCode == http.StatusTooManyRequests {
-				// Parse retry-after first to distinguish rate limit vs quota exhausted
-				var retryAfter *time.Duration
-				if parsed, parseErr := parseRetryDelay(bodyBytes); parseErr == nil && parsed != nil {
-					retryAfter = parsed
+			recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+			if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+				bodyBytes, errRead := io.ReadAll(httpResp.Body)
+				if errClose := httpResp.Body.Close(); errClose != nil {
+					log.Errorf("antigravity executor: close response body error: %v", errClose)
 				}
-				e.recordRateLimitError(retryAfter) // Record 429 for adaptive limiting
-				if idx+1 < len(baseURLs) {
+				if errRead != nil {
+					recordAPIResponseError(ctx, e.cfg, errRead)
+					if errors.Is(errRead, context.Canceled) || errors.Is(errRead, context.DeadlineExceeded) {
+						err = errRead
+						return nil, err
+					}
+					if errCtx := ctx.Err(); errCtx != nil {
+						err = errCtx
+						return nil, err
+					}
+					lastStatus = 0
+					lastBody = nil
+					lastErr = errRead
+					if idx+1 < len(baseURLs) {
+						log.Debugf("antigravity executor: read error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+						continue
+					}
+					err = errRead
+					return nil, err
+				}
+				appendAPIResponseChunk(ctx, e.cfg, bodyBytes)
+				lastStatus = httpResp.StatusCode
+				lastBody = append([]byte(nil), bodyBytes...)
+				lastErr = nil
+				if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
 					log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 					continue
 				}
+				if antigravityShouldRetryNoCapacity(httpResp.StatusCode, bodyBytes) {
+					if idx+1 < len(baseURLs) {
+						log.Debugf("antigravity executor: no capacity on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+						continue
+					}
+					if attempt+1 < attempts {
+						delay := antigravityNoCapacityRetryDelay(attempt)
+						log.Debugf("antigravity executor: no capacity for model %s, retrying in %s (attempt %d/%d)", baseModel, delay, attempt+1, attempts)
+						if errWait := antigravityWait(ctx, delay); errWait != nil {
+							return nil, errWait
+						}
+						continue attemptLoop
+					}
+				}
+				sErr := statusErr{code: httpResp.StatusCode, msg: string(bodyBytes)}
+				if httpResp.StatusCode == http.StatusTooManyRequests {
+					if retryAfter, parseErr := parseRetryDelay(bodyBytes); parseErr == nil && retryAfter != nil {
+						sErr.retryAfter = retryAfter
+					}
+				}
+				err = sErr
+				return nil, err
 			}
-			sErr := statusErr{code: httpResp.StatusCode, msg: string(bodyBytes)}
-			if httpResp.StatusCode == http.StatusTooManyRequests {
-				if retryAfter, parseErr := parseRetryDelay(bodyBytes); parseErr == nil && retryAfter != nil {
+
+			out := make(chan cliproxyexecutor.StreamChunk)
+			stream = out
+			go func(resp *http.Response) {
+				defer close(out)
+				defer func() {
+					if errClose := resp.Body.Close(); errClose != nil {
+						log.Errorf("antigravity executor: close response body error: %v", errClose)
+					}
+				}()
+				scanner := bufio.NewScanner(resp.Body)
+				scanner.Buffer(nil, streamScannerBuffer)
+				var param any
+				for scanner.Scan() {
+					line := scanner.Bytes()
+					appendAPIResponseChunk(ctx, e.cfg, line)
+
+					// Filter usage metadata for all models
+					// Only retain usage statistics in the terminal chunk
+					line = FilterSSEUsageMetadata(line)
+
+					payload := jsonPayload(line)
+					if payload == nil {
+						continue
+					}
+
+					if detail, ok := parseAntigravityStreamUsage(payload); ok {
+						reporter.publish(ctx, detail)
+					}
+
+					chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, bytes.Clone(opts.OriginalRequest), translated, bytes.Clone(payload), &param)
+					for i := range chunks {
+						out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}
+					}
+				}
+				tail := sdktranslator.TranslateStream(ctx, to, from, req.Model, bytes.Clone(opts.OriginalRequest), translated, []byte("[DONE]"), &param)
+				for i := range tail {
+					out <- cliproxyexecutor.StreamChunk{Payload: []byte(tail[i])}
+				}
+				if errScan := scanner.Err(); errScan != nil {
+					recordAPIResponseError(ctx, e.cfg, errScan)
+					reporter.publishFailure(ctx)
+					out <- cliproxyexecutor.StreamChunk{Err: errScan}
+				} else {
+					reporter.ensurePublished(ctx)
+				}
+			}(httpResp)
+			return stream, nil
+		}
+
+		switch {
+		case lastStatus != 0:
+			sErr := statusErr{code: lastStatus, msg: string(lastBody)}
+			if lastStatus == http.StatusTooManyRequests {
+				if retryAfter, parseErr := parseRetryDelay(lastBody); parseErr == nil && retryAfter != nil {
 					sErr.retryAfter = retryAfter
 				}
 			}
 			err = sErr
-			return nil, err
+		case lastErr != nil:
+			err = lastErr
+		default:
+			err = statusErr{code: http.StatusServiceUnavailable, msg: "antigravity executor: no base url available"}
 		}
-
-		out := make(chan cliproxyexecutor.StreamChunk)
-		stream = out
-		slotReleased = true // Mark that we'll release in the goroutine
-		go func(resp *http.Response) {
-			defer close(out)
-			defer func() {
-				// Release concurrency slot after streaming completes
-				e.releaseConcurrencySlot(true) // streaming succeeded if we got here
-			}()
-			defer func() {
-				if errClose := resp.Body.Close(); errClose != nil {
-					log.Errorf("antigravity executor: close response body error: %v", errClose)
-				}
-			}()
-			scanner := bufio.NewScanner(resp.Body)
-			scanner.Buffer(nil, streamScannerBuffer)
-			var param any
-			for scanner.Scan() {
-				line := scanner.Bytes()
-				appendAPIResponseChunk(ctx, e.cfg, line)
-
-				// Filter usage metadata for all models
-				// Only retain usage statistics in the terminal chunk
-				line = FilterSSEUsageMetadata(line)
-
-				payload := jsonPayload(line)
-				if payload == nil {
-					continue
-				}
-
-				if detail, ok := parseAntigravityStreamUsage(payload); ok {
-					reporter.publish(ctx, detail)
-				}
-
-				chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, bytes.Clone(opts.OriginalRequest), translated, bytes.Clone(payload), &param)
-				for i := range chunks {
-					out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}
-				}
-			}
-			tail := sdktranslator.TranslateStream(ctx, to, from, req.Model, bytes.Clone(opts.OriginalRequest), translated, []byte("[DONE]"), &param)
-			for i := range tail {
-				out <- cliproxyexecutor.StreamChunk{Payload: []byte(tail[i])}
-			}
-			if errScan := scanner.Err(); errScan != nil {
-				recordAPIResponseError(ctx, e.cfg, errScan)
-				reporter.publishFailure(ctx)
-				out <- cliproxyexecutor.StreamChunk{Err: errScan}
-			} else {
-				reporter.ensurePublished(ctx)
-			}
-		}(httpResp)
-		return stream, nil
+		return nil, err
 	}
 
-	switch {
-	case lastStatus != 0:
-		sErr := statusErr{code: lastStatus, msg: string(lastBody)}
-		if lastStatus == http.StatusTooManyRequests {
-			if retryAfter, parseErr := parseRetryDelay(lastBody); parseErr == nil && retryAfter != nil {
-				sErr.retryAfter = retryAfter
-			}
-		}
-		err = sErr
-	case lastErr != nil:
-		err = lastErr
-	default:
-		err = statusErr{code: http.StatusServiceUnavailable, msg: "antigravity executor: no base url available"}
-	}
 	return nil, err
 }
 
@@ -955,21 +848,6 @@ func (e *AntigravityExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Au
 
 // CountTokens counts tokens for the given request using the Antigravity API.
 func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	// Apply rate limiting before processing request
-	if errWait := e.waitForRateLimit(ctx); errWait != nil {
-		return cliproxyexecutor.Response{}, errWait
-	}
-
-	// Acquire concurrency slot
-	if errAcquire := e.acquireConcurrencySlot(ctx); errAcquire != nil {
-		return cliproxyexecutor.Response{}, errAcquire
-	}
-	var err error
-	defer func() {
-		success := err == nil || !is429Error(err)
-		e.releaseConcurrencySlot(success)
-	}()
-
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	token, updatedAuth, errToken := e.ensureAccessToken(ctx, auth)
@@ -990,7 +868,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 	// Prepare payload once (doesn't depend on baseURL)
 	payload := sdktranslator.TranslateRequest(from, to, baseModel, bytes.Clone(req.Payload), false)
 
-	payload, err = thinking.ApplyThinking(payload, req.Model, from.String(), to.String(), e.Identifier())
+	payload, err := thinking.ApplyThinking(payload, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
@@ -1055,8 +933,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 		if errDo != nil {
 			recordAPIResponseError(ctx, e.cfg, errDo)
 			if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
-				err = errDo
-				return cliproxyexecutor.Response{}, err
+				return cliproxyexecutor.Response{}, errDo
 			}
 			lastStatus = 0
 			lastBody = nil
@@ -1065,8 +942,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 				log.Debugf("antigravity executor: request error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 				continue
 			}
-			err = errDo
-			return cliproxyexecutor.Response{}, err
+			return cliproxyexecutor.Response{}, errDo
 		}
 
 		recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
@@ -1076,8 +952,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 		}
 		if errRead != nil {
 			recordAPIResponseError(ctx, e.cfg, errRead)
-			err = errRead
-			return cliproxyexecutor.Response{}, err
+			return cliproxyexecutor.Response{}, errRead
 		}
 		appendAPIResponseChunk(ctx, e.cfg, bodyBytes)
 
@@ -1090,17 +965,9 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 		lastStatus = httpResp.StatusCode
 		lastBody = append([]byte(nil), bodyBytes...)
 		lastErr = nil
-		if httpResp.StatusCode == http.StatusTooManyRequests {
-			// Parse retry-after first to distinguish rate limit vs quota exhausted
-			var retryAfter *time.Duration
-			if parsed, parseErr := parseRetryDelay(bodyBytes); parseErr == nil && parsed != nil {
-				retryAfter = parsed
-			}
-			e.recordRateLimitError(retryAfter) // Record 429 for adaptive limiting
-			if idx+1 < len(baseURLs) {
-				log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
-				continue
-			}
+		if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
+			log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+			continue
 		}
 		sErr := statusErr{code: httpResp.StatusCode, msg: string(bodyBytes)}
 		if httpResp.StatusCode == http.StatusTooManyRequests {
@@ -1108,8 +975,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 				sErr.retryAfter = retryAfter
 			}
 		}
-		err = sErr
-		return cliproxyexecutor.Response{}, err
+		return cliproxyexecutor.Response{}, sErr
 	}
 
 	switch {
@@ -1120,21 +986,17 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 				sErr.retryAfter = retryAfter
 			}
 		}
-		err = sErr
-		return cliproxyexecutor.Response{}, err
+		return cliproxyexecutor.Response{}, sErr
 	case lastErr != nil:
-		err = lastErr
-		return cliproxyexecutor.Response{}, err
+		return cliproxyexecutor.Response{}, lastErr
 	default:
-		err = statusErr{code: http.StatusServiceUnavailable, msg: "antigravity executor: no base url available"}
-		return cliproxyexecutor.Response{}, err
+		return cliproxyexecutor.Response{}, statusErr{code: http.StatusServiceUnavailable, msg: "antigravity executor: no base url available"}
 	}
 }
 
 // FetchAntigravityModels retrieves available models using the supplied auth.
 func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
 	exec := &AntigravityExecutor{cfg: cfg}
-	exec.initRateLimiter() // Initialize rate limiter before using
 	token, updatedAuth, errToken := exec.ensureAccessToken(ctx, auth)
 	if errToken != nil || token == "" {
 		return nil
@@ -1157,11 +1019,6 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 		httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
 		if host := resolveHost(baseURL); host != "" {
 			httpReq.Host = host
-		}
-
-		// Apply rate limiting before every HTTP request to Antigravity API
-		if errWait := exec.waitForRateLimit(ctx); errWait != nil {
-			return nil
 		}
 
 		httpResp, errDo := httpClient.Do(httpReq)
@@ -1188,17 +1045,9 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 			return nil
 		}
 		if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-			if httpResp.StatusCode == http.StatusTooManyRequests {
-				// Parse retry-after first to distinguish rate limit vs quota exhausted
-				var retryAfter *time.Duration
-				if parsed, parseErr := parseRetryDelay(bodyBytes); parseErr == nil && parsed != nil {
-					retryAfter = parsed
-				}
-				exec.recordRateLimitError(retryAfter) // Record 429 for adaptive limiting
-				if idx+1 < len(baseURLs) {
-					log.Debugf("antigravity executor: models request rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
-					continue
-				}
+			if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
+				log.Debugf("antigravity executor: models request rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+				continue
 			}
 			return nil
 		}
@@ -1423,12 +1272,21 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		}
 	}
 	payload = geminiToAntigravity(modelName, payload, projectID)
+	payload, _ = sjson.SetBytes(payload, "model", modelName)
 
-	// Use optimized post-processing for Claude/Gemini-3-pro-high models (avoids gjson/sjson)
 	if strings.Contains(modelName, "claude") || strings.Contains(modelName, "gemini-3-pro-high") {
-		payload = postProcessAntigravityPayload(payload, modelName)
+		strJSON := string(payload)
+		paths := make([]string, 0)
+		util.Walk(gjson.ParseBytes(payload), "", "parametersJsonSchema", &paths)
+		for _, p := range paths {
+			strJSON, _ = util.RenameKey(strJSON, p, p[:len(p)-len("parametersJsonSchema")]+"parameters")
+		}
+
+		// Use the centralized schema cleaner to handle unsupported keywords,
+		// const->enum conversion, and flattening of types/anyOf.
+		strJSON = util.CleanJSONSchemaForAntigravity(strJSON)
+		payload = []byte(strJSON)
 	} else {
-		// For other Gemini models: rename parametersJsonSchema to parameters and clean schemas
 		strJSON := string(payload)
 		paths := make([]string, 0)
 		util.Walk(gjson.Parse(strJSON), "", "parametersJsonSchema", &paths)
@@ -1589,14 +1447,70 @@ func resolveUserAgent(auth *cliproxyauth.Auth) string {
 	return defaultAntigravityAgent
 }
 
+func antigravityRetryAttempts(auth *cliproxyauth.Auth, cfg *config.Config) int {
+	retry := 0
+	if cfg != nil {
+		retry = cfg.RequestRetry
+	}
+	if auth != nil {
+		if override, ok := auth.RequestRetryOverride(); ok {
+			retry = override
+		}
+	}
+	if retry < 0 {
+		retry = 0
+	}
+	attempts := retry + 1
+	if attempts < 1 {
+		return 1
+	}
+	return attempts
+}
+
+func antigravityShouldRetryNoCapacity(statusCode int, body []byte) bool {
+	if statusCode != http.StatusServiceUnavailable {
+		return false
+	}
+	if len(body) == 0 {
+		return false
+	}
+	msg := strings.ToLower(string(body))
+	return strings.Contains(msg, "no capacity available")
+}
+
+func antigravityNoCapacityRetryDelay(attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
+	}
+	delay := time.Duration(attempt+1) * 250 * time.Millisecond
+	if delay > 2*time.Second {
+		delay = 2 * time.Second
+	}
+	return delay
+}
+
+func antigravityWait(ctx context.Context, wait time.Duration) error {
+	if wait <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 func antigravityBaseURLFallbackOrder(auth *cliproxyauth.Auth) []string {
 	if base := resolveCustomAntigravityBaseURL(auth); base != "" {
 		return []string{base}
 	}
 	return []string{
-		antigravitySandboxBaseURLDaily,
 		antigravityBaseURLDaily,
-		antigravityBaseURLProd,
+		antigravitySandboxBaseURLDaily,
+		// antigravityBaseURLProd,
 	}
 }
 
@@ -1621,94 +1535,6 @@ func resolveCustomAntigravityBaseURL(auth *cliproxyauth.Auth) string {
 }
 
 func geminiToAntigravity(modelName string, payload []byte, projectID string) []byte {
-	// Use json.Unmarshal/Marshal instead of sjson for better performance
-	var data map[string]interface{}
-	if err := json.Unmarshal(payload, &data); err != nil {
-		// Fallback to original sjson approach if unmarshal fails
-		return geminiToAntigravityLegacy(modelName, payload, projectID)
-	}
-
-	// Set top-level fields
-	data["model"] = modelName
-	data["userAgent"] = "antigravity"
-	data["requestType"] = "agent"
-
-	// Set project ID
-	if projectID != "" {
-		data["project"] = projectID
-	} else {
-		data["project"] = generateProjectID()
-	}
-	data["requestId"] = generateRequestID()
-
-	// Handle request object
-	request, ok := data["request"].(map[string]interface{})
-	if !ok {
-		request = make(map[string]interface{})
-		data["request"] = request
-	}
-
-	// Set session ID
-	request["sessionId"] = generateStableSessionID(payload)
-
-	// Delete safety settings
-	delete(request, "safetySettings")
-
-	// Set tool config
-	toolConfig, ok := request["toolConfig"].(map[string]interface{})
-	if !ok {
-		toolConfig = make(map[string]interface{})
-		request["toolConfig"] = toolConfig
-	}
-	funcCallingConfig, ok := toolConfig["functionCallingConfig"].(map[string]interface{})
-	if !ok {
-		funcCallingConfig = make(map[string]interface{})
-		toolConfig["functionCallingConfig"] = funcCallingConfig
-	}
-	funcCallingConfig["mode"] = "VALIDATED"
-
-	// Handle Claude-specific tool processing
-	if strings.Contains(modelName, "claude") {
-		if tools, ok := request["tools"].([]interface{}); ok {
-			for _, tool := range tools {
-				toolMap, ok := tool.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				if funcDecls, ok := toolMap["functionDeclarations"].([]interface{}); ok {
-					for _, funcDecl := range funcDecls {
-						funcDeclMap, ok := funcDecl.(map[string]interface{})
-						if !ok {
-							continue
-						}
-						if paramSchema, exists := funcDeclMap["parametersJsonSchema"]; exists {
-							funcDeclMap["parameters"] = paramSchema
-							delete(funcDeclMap, "parametersJsonSchema")
-							// Delete $schema from parameters if it exists
-							if params, ok := funcDeclMap["parameters"].(map[string]interface{}); ok {
-								delete(params, "$schema")
-							}
-						}
-					}
-				}
-			}
-		}
-	} else {
-		// Non-claude: delete maxOutputTokens
-		if genConfig, ok := request["generationConfig"].(map[string]interface{}); ok {
-			delete(genConfig, "maxOutputTokens")
-		}
-	}
-
-	result, err := json.Marshal(data)
-	if err != nil {
-		return geminiToAntigravityLegacy(modelName, payload, projectID)
-	}
-	return result
-}
-
-// geminiToAntigravityLegacy is the original sjson-based implementation (fallback)
-func geminiToAntigravityLegacy(modelName string, payload []byte, projectID string) []byte {
 	template, _ := sjson.Set(string(payload), "model", modelName)
 	template, _ = sjson.Set(template, "userAgent", "antigravity")
 	template, _ = sjson.Set(template, "requestType", "agent")
@@ -1742,23 +1568,16 @@ func generateSessionID() string {
 }
 
 func generateStableSessionID(payload []byte) string {
-	// Use json.Unmarshal instead of gjson for better performance
-	var data struct {
-		Request struct {
-			Contents []struct {
-				Role  string `json:"role"`
-				Parts []struct {
-					Text string `json:"text"`
-				} `json:"parts"`
-			} `json:"contents"`
-		} `json:"request"`
-	}
-	if err := json.Unmarshal(payload, &data); err == nil {
-		for _, content := range data.Request.Contents {
-			if content.Role == "user" && len(content.Parts) > 0 && content.Parts[0].Text != "" {
-				h := sha256.Sum256([]byte(content.Parts[0].Text))
-				n := int64(binary.BigEndian.Uint64(h[:8])) & 0x7FFFFFFFFFFFFFFF
-				return "-" + strconv.FormatInt(n, 10)
+	contents := gjson.GetBytes(payload, "request.contents")
+	if contents.IsArray() {
+		for _, content := range contents.Array() {
+			if content.Get("role").String() == "user" {
+				text := content.Get("parts.0.text").String()
+				if text != "" {
+					h := sha256.Sum256([]byte(text))
+					n := int64(binary.BigEndian.Uint64(h[:8])) & 0x7FFFFFFFFFFFFFFF
+					return "-" + strconv.FormatInt(n, 10)
+				}
 			}
 		}
 	}
@@ -1774,170 +1593,4 @@ func generateProjectID() string {
 	randSourceMutex.Unlock()
 	randomPart := strings.ToLower(uuid.NewString())[:5]
 	return adj + "-" + noun + "-" + randomPart
-}
-
-// postProcessAntigravityPayload performs post-processing on the payload without gjson/sjson
-// This replaces the expensive util.Walk + util.RenameKey + CleanJSONSchemaForAntigravityOptimized chain
-func postProcessAntigravityPayload(payload []byte, modelName string) []byte {
-	var data map[string]interface{}
-	if err := json.Unmarshal(payload, &data); err != nil {
-		return payload // Return as-is on parse error
-	}
-
-	// Set model name
-	data["model"] = modelName
-
-	// Process tools: rename parametersJsonSchema to parameters and clean schemas
-	if request, ok := data["request"].(map[string]interface{}); ok {
-		// Process tools
-		if tools, ok := request["tools"].([]interface{}); ok {
-			for _, tool := range tools {
-				if toolMap, ok := tool.(map[string]interface{}); ok {
-					if funcDecls, ok := toolMap["functionDeclarations"].([]interface{}); ok {
-						for _, fd := range funcDecls {
-							if fdMap, ok := fd.(map[string]interface{}); ok {
-								// Rename parametersJsonSchema to parameters and clean schema
-								if schema, exists := fdMap["parametersJsonSchema"]; exists {
-									// Clean the schema if it's a map
-									if schemaMap, isMap := schema.(map[string]interface{}); isMap {
-										cleanSchemaInPlace(schemaMap)
-									}
-									fdMap["parameters"] = schema
-									delete(fdMap, "parametersJsonSchema")
-								} else if schema, exists := fdMap["parameters"]; exists {
-									// Also clean parameters if already renamed by geminiToAntigravity
-									if schemaMap, isMap := schema.(map[string]interface{}); isMap {
-										cleanSchemaInPlace(schemaMap)
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-
-		// Process systemInstruction for Claude/Gemini models
-		processSystemInstruction(request)
-	}
-
-	result, err := json.Marshal(data)
-	if err != nil {
-		return payload
-	}
-	return result
-}
-
-// cleanSchemaInPlace applies schema cleaning transformations in-place
-func cleanSchemaInPlace(schema map[string]interface{}) {
-	// Remove $ref and replace with description hint
-	if refVal, ok := schema["$ref"].(string); ok {
-		defName := refVal
-		if idx := strings.LastIndex(refVal, "/"); idx >= 0 {
-			defName = refVal[idx+1:]
-		}
-		hint := fmt.Sprintf("See: %s", defName)
-		if existing, ok := schema["description"].(string); ok && existing != "" {
-			hint = fmt.Sprintf("%s (%s)", existing, hint)
-		}
-		for k := range schema {
-			delete(schema, k)
-		}
-		schema["type"] = "object"
-		schema["description"] = hint
-		return
-	}
-
-	// Flatten type array (e.g., ["string", "null"] -> "string")
-	if typeArr, ok := schema["type"].([]interface{}); ok && len(typeArr) > 0 {
-		var firstNonNull string
-		for _, t := range typeArr {
-			if tStr, ok := t.(string); ok && tStr != "null" && tStr != "" {
-				firstNonNull = tStr
-				break
-			}
-		}
-		if firstNonNull == "" {
-			firstNonNull = "string" // default type
-		}
-		schema["type"] = firstNonNull
-	}
-
-	// Handle const -> enum
-	if constVal, ok := schema["const"]; ok {
-		if _, hasEnum := schema["enum"]; !hasEnum {
-			schema["enum"] = []interface{}{constVal}
-		}
-		delete(schema, "const")
-	}
-
-	// Remove unsupported keys
-	unsupportedKeys := []string{
-		"$schema", "$defs", "definitions", "propertyNames",
-		"minLength", "maxLength", "pattern", "format", "default", "examples",
-		"exclusiveMinimum", "exclusiveMaximum", "minItems", "maxItems",
-	}
-	for _, key := range unsupportedKeys {
-		delete(schema, key)
-	}
-
-	// Recursively clean nested schemas
-	if props, ok := schema["properties"].(map[string]interface{}); ok {
-		for _, prop := range props {
-			if propMap, ok := prop.(map[string]interface{}); ok {
-				cleanSchemaInPlace(propMap)
-			}
-		}
-	}
-	if items, ok := schema["items"].(map[string]interface{}); ok {
-		cleanSchemaInPlace(items)
-	}
-	// Handle anyOf/oneOf/allOf arrays
-	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
-		if arr, ok := schema[key].([]interface{}); ok {
-			for _, item := range arr {
-				if itemMap, ok := item.(map[string]interface{}); ok {
-					cleanSchemaInPlace(itemMap)
-				}
-			}
-		}
-	}
-}
-
-// processSystemInstruction modifies the system instruction for Claude/Gemini models
-func processSystemInstruction(request map[string]interface{}) {
-	sysInst, ok := request["systemInstruction"].(map[string]interface{})
-	if !ok {
-		sysInst = make(map[string]interface{})
-		request["systemInstruction"] = sysInst
-	}
-
-	// Get existing parts
-	var existingParts []interface{}
-	if parts, ok := sysInst["parts"].([]interface{}); ok {
-		existingParts = parts
-	}
-
-	// Create new parts array with system instruction prefix
-	newParts := []interface{}{
-		map[string]interface{}{"text": systemInstruction},
-		map[string]interface{}{"text": fmt.Sprintf("Please ignore following [ignore]%s[/ignore]", systemInstruction)},
-	}
-
-	// Append existing parts
-	newParts = append(newParts, existingParts...)
-
-	sysInst["role"] = "user"
-	sysInst["parts"] = newParts
-}
-
-// is429Error checks if the error is a 429 rate limit error.
-func is429Error(err error) bool {
-	if err == nil {
-		return false
-	}
-	if sErr, ok := err.(statusErr); ok {
-		return sErr.code == http.StatusTooManyRequests
-	}
-	return false
 }
