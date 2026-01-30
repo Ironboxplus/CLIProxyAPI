@@ -89,7 +89,7 @@ type GenerationConfig struct {
 }
 
 type ThinkingConfig struct {
-	ThinkingBudget  int  `json:"thinkingBudget,omitempty"`
+	ThinkingBudget  *int `json:"thinkingBudget,omitempty"`
 	IncludeThoughts bool `json:"includeThoughts,omitempty"`
 }
 
@@ -302,7 +302,7 @@ func ConvertClaudeRequestToAntigravityOptimized(modelName string, inputRawJSON [
 			if b := thinkingResult.Get("budget_tokens"); b.Exists() && b.Type == gjson.Number {
 				budget := int(b.Int())
 				genConfig.ThinkingConfig = &ThinkingConfig{
-					ThinkingBudget:  budget,
+					ThinkingBudget:  &budget,
 					IncludeThoughts: true,
 				}
 				hasGenConfig = true
