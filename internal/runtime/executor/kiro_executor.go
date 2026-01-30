@@ -104,13 +104,13 @@ func getGlobalFingerprintManager() *kiroauth.FingerprintManager {
 // retryConfig holds configuration for socket retry logic.
 // Based on kiro2Api Python implementation patterns.
 type retryConfig struct {
-	MaxRetries       int           // Maximum number of retry attempts
-	BaseDelay        time.Duration // Base delay between retries (exponential backoff)
-	MaxDelay         time.Duration // Maximum delay cap
-	RetryableErrors  []string      // List of retryable error patterns
-	RetryableStatus  map[int]bool  // HTTP status codes to retry
-	FirstTokenTmout  time.Duration // Timeout for first token in streaming
-	StreamReadTmout  time.Duration // Timeout between stream chunks
+	MaxRetries      int           // Maximum number of retry attempts
+	BaseDelay       time.Duration // Base delay between retries (exponential backoff)
+	MaxDelay        time.Duration // Maximum delay cap
+	RetryableErrors []string      // List of retryable error patterns
+	RetryableStatus map[int]bool  // HTTP status codes to retry
+	FirstTokenTmout time.Duration // Timeout for first token in streaming
+	StreamReadTmout time.Duration // Timeout between stream chunks
 }
 
 // defaultRetryConfig returns the default retry configuration for Kiro socket operations.
@@ -334,12 +334,30 @@ type kiroEndpointConfig struct {
 	Name      string // Endpoint name for logging
 }
 
-// kiroEndpointConfigs defines the available Kiro API endpoints with their compatible configurations.
-// The order determines fallback priority: primary endpoint first, then fallbacks.
+// kiroDefaultRegion is the default AWS region for Kiro API endpoints.
+// Used when no region is specified in auth metadata.
+const kiroDefaultRegion = "us-east-1"
+
+// extractRegionFromProfileARN extracts the AWS region from a ProfileARN.
+// ARN format: arn:aws:codewhisperer:REGION:ACCOUNT:profile/PROFILE_ID
+// Returns empty string if region cannot be extracted.
+func extractRegionFromProfileARN(profileArn string) string {
+	if profileArn == "" {
+		return ""
+	}
+	parts := strings.Split(profileArn, ":")
+	if len(parts) >= 4 && parts[3] != "" {
+		return parts[3]
+	}
+	return ""
+}
+
+// buildKiroEndpointConfigs creates endpoint configurations for the specified region.
+// This enables dynamic region support for Enterprise/IdC users in non-us-east-1 regions.
 //
 // CRITICAL: Each endpoint MUST use its compatible Origin and AmzTarget values:
-// - CodeWhisperer endpoint (codewhisperer.us-east-1.amazonaws.com): Uses AI_EDITOR origin and AmazonCodeWhispererStreamingService target
-// - Amazon Q endpoint (q.us-east-1.amazonaws.com): Uses CLI origin and AmazonQDeveloperStreamingService target
+// - CodeWhisperer endpoint (codewhisperer.{region}.amazonaws.com): Uses AI_EDITOR origin and AmazonCodeWhispererStreamingService target
+// - Amazon Q endpoint (q.{region}.amazonaws.com): Uses CLI origin and AmazonQDeveloperStreamingService target
 //
 // Mismatched combinations will result in 403 Forbidden errors.
 //
@@ -348,28 +366,76 @@ type kiroEndpointConfig struct {
 // 2. These tokens use AI_EDITOR origin which is only compatible with CodeWhisperer endpoint
 // 3. Amazon Q endpoint requires CLI origin which is for Amazon Q CLI tokens
 // This matches the AIClient-2-API-main project's configuration.
-var kiroEndpointConfigs = []kiroEndpointConfig{
-	{
-		URL:       "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse",
-		Origin:    "AI_EDITOR",
-		AmzTarget: "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
-		Name:      "CodeWhisperer",
-	},
-	{
-		URL:       "https://q.us-east-1.amazonaws.com/",
-		Origin:    "CLI",
-		AmzTarget: "AmazonQDeveloperStreamingService.SendMessage",
-		Name:      "AmazonQ",
-	},
+func buildKiroEndpointConfigs(region string) []kiroEndpointConfig {
+	if region == "" {
+		region = kiroDefaultRegion
+	}
+	return []kiroEndpointConfig{
+		{
+			URL:       fmt.Sprintf("https://codewhisperer.%s.amazonaws.com/generateAssistantResponse", region),
+			Origin:    "AI_EDITOR",
+			AmzTarget: "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
+			Name:      "CodeWhisperer",
+		},
+		{
+			URL:       fmt.Sprintf("https://q.%s.amazonaws.com/", region),
+			Origin:    "CLI",
+			AmzTarget: "AmazonQDeveloperStreamingService.SendMessage",
+			Name:      "AmazonQ",
+		},
+	}
 }
 
+// kiroEndpointConfigs is kept for backward compatibility with default us-east-1 region.
+// Prefer using buildKiroEndpointConfigs(region) for dynamic region support.
+var kiroEndpointConfigs = buildKiroEndpointConfigs(kiroDefaultRegion)
+
 // getKiroEndpointConfigs returns the list of Kiro API endpoint configurations to try in order.
+// Supports dynamic region based on auth metadata "api_region", "profile_arn", or "region" field.
 // Supports reordering based on "preferred_endpoint" in auth metadata/attributes.
 // For IDC auth method, automatically uses CodeWhisperer endpoint with CLI origin.
+//
+// Region priority:
+// 1. auth.Metadata["api_region"] - explicit API region override
+// 2. ProfileARN region - extracted from arn:aws:service:REGION:account:resource
+// 3. auth.Metadata["region"] - OIDC/Identity region (may differ from API region)
+// 4. kiroDefaultRegion (us-east-1) - fallback
 func getKiroEndpointConfigs(auth *cliproxyauth.Auth) []kiroEndpointConfig {
 	if auth == nil {
 		return kiroEndpointConfigs
 	}
+
+	// Determine API region with priority: api_region > profile_arn > region > default
+	region := kiroDefaultRegion
+	regionSource := "default"
+
+	if auth.Metadata != nil {
+		// Priority 1: Explicit api_region override
+		if r, ok := auth.Metadata["api_region"].(string); ok && r != "" {
+			region = r
+			regionSource = "api_region"
+		} else {
+			// Priority 2: Extract from ProfileARN
+			if profileArn, ok := auth.Metadata["profile_arn"].(string); ok && profileArn != "" {
+				if arnRegion := extractRegionFromProfileARN(profileArn); arnRegion != "" {
+					region = arnRegion
+					regionSource = "profile_arn"
+				}
+			}
+			// Priority 3: OIDC region (only if not already set from profile_arn)
+			if regionSource == "default" {
+				if r, ok := auth.Metadata["region"].(string); ok && r != "" {
+					region = r
+					regionSource = "region"
+				}
+			}
+		}
+	}
+
+	log.Debugf("kiro: using region %s (source: %s)", region, regionSource)
+
+	// Build endpoint configs for the specified region
+	endpointConfigs := buildKiroEndpointConfigs(region)
 
 	// For IDC auth, use CodeWhisperer endpoint with AI_EDITOR origin (same as Social auth)
 	// Based on kiro2api analysis: IDC tokens work with CodeWhisperer endpoint using Bearer auth
@@ -377,9 +443,9 @@ func getKiroEndpointConfigs(auth *cliproxyauth.Auth) []kiroEndpointConfig {
 	// NOT in how API calls are made - both Social and IDC use the same endpoint/origin
 	if auth.Metadata != nil {
 		authMethod, _ := auth.Metadata["auth_method"].(string)
-		if authMethod == "idc" {
-			log.Debugf("kiro: IDC auth, using CodeWhisperer endpoint")
-			return kiroEndpointConfigs
+		if strings.ToLower(authMethod) == "idc" {
+			log.Debugf("kiro: IDC auth, using CodeWhisperer endpoint (region: %s)", region)
+			return endpointConfigs
 		}
 	}
 
@@ -396,7 +462,7 @@ func getKiroEndpointConfigs(auth *cliproxyauth.Auth) []kiroEndpointConfig {
 	}
 
 	if preference == "" {
-		return kiroEndpointConfigs
+		return endpointConfigs
 	}
 
 	preference = strings.ToLower(strings.TrimSpace(preference))
@@ -405,7 +471,7 @@ func getKiroEndpointConfigs(auth *cliproxyauth.Auth) []kiroEndpointConfig {
 	var sorted []kiroEndpointConfig
 	var remaining []kiroEndpointConfig
 
-	for _, cfg := range kiroEndpointConfigs {
+	for _, cfg := range endpointConfigs {
 		name := strings.ToLower(cfg.Name)
 		// Check for matches
 		// CodeWhisperer aliases: codewhisperer, ide
@@ -426,7 +492,7 @@ func getKiroEndpointConfigs(auth *cliproxyauth.Auth) []kiroEndpointConfig {
 
 	// If preference didn't match anything, return default
 	if len(sorted) == 0 {
-		return kiroEndpointConfigs
+		return endpointConfigs
 	}
 
 	// Combine: preferred first, then others
@@ -445,7 +511,7 @@ func isIDCAuth(auth *cliproxyauth.Auth) bool {
 		return false
 	}
 	authMethod, _ := auth.Metadata["auth_method"].(string)
-	return authMethod == "idc"
+	return strings.ToLower(authMethod) == "idc"
 }
 
 // buildKiroPayloadForFormat builds the Kiro API payload based on the source format.
@@ -482,12 +548,12 @@ func applyDynamicFingerprint(req *http.Request, auth *cliproxyauth.Auth) {
 		// Get token-specific fingerprint for dynamic UA generation
 		tokenKey := getTokenKey(auth)
 		fp := getGlobalFingerprintManager().GetFingerprint(tokenKey)
-		
+
 		// Use fingerprint-generated dynamic User-Agent
 		req.Header.Set("User-Agent", fp.BuildUserAgent())
 		req.Header.Set("X-Amz-User-Agent", fp.BuildAmzUserAgent())
 		req.Header.Set("x-amzn-kiro-agent-mode", kiroIDEAgentModeSpec)
-		
+
 		log.Debugf("kiro: using dynamic fingerprint for token %s (SDK:%s, OS:%s/%s, Kiro:%s)",
 			tokenKey[:8]+"...", fp.SDKVersion, fp.OSType, fp.OSVersion, fp.KiroVersion)
 	} else {
@@ -506,10 +572,10 @@ func (e *KiroExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth
 	if strings.TrimSpace(accessToken) == "" {
 		return statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
 	}
-	
+
 	// Apply dynamic fingerprint-based headers
 	applyDynamicFingerprint(req, auth)
-	
+
 	req.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 	req.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
 	req.Header.Set("Authorization", "Bearer "+accessToken)
@@ -670,7 +736,7 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 
 			// Apply dynamic fingerprint-based headers
 			applyDynamicFingerprint(httpReq, auth)
-			
+
 			httpReq.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 			httpReq.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
 
@@ -910,29 +976,35 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 			}
 
 			// Fallback for usage if missing from upstream
-			if usageInfo.TotalTokens == 0 {
+
+			// 1. Estimate InputTokens if missing
+			if usageInfo.InputTokens == 0 {
 				if enc, encErr := getTokenizer(req.Model); encErr == nil {
 					if inp, countErr := countOpenAIChatTokens(enc, opts.OriginalRequest); countErr == nil {
 						usageInfo.InputTokens = inp
 					}
 				}
-				if len(content) > 0 {
-					// Use tiktoken for more accurate output token calculation
-					if enc, encErr := getTokenizer(req.Model); encErr == nil {
-						if tokenCount, countErr := enc.Count(content); countErr == nil {
-							usageInfo.OutputTokens = int64(tokenCount)
-						}
-					}
-					// Fallback to character count estimation if tiktoken fails
-					if usageInfo.OutputTokens == 0 {
-						usageInfo.OutputTokens = int64(len(content) / 4)
-						if usageInfo.OutputTokens == 0 {
-							usageInfo.OutputTokens = 1
-						}
+			}
+
+			// 2. Estimate OutputTokens if missing and content is available
+			if usageInfo.OutputTokens == 0 && len(content) > 0 {
+				// Use tiktoken for more accurate output token calculation
+				if enc, encErr := getTokenizer(req.Model); encErr == nil {
+					if tokenCount, countErr := enc.Count(content); countErr == nil {
+						usageInfo.OutputTokens = int64(tokenCount)
 					}
 				}
-				usageInfo.TotalTokens = usageInfo.InputTokens + usageInfo.OutputTokens
+				// Fallback to character count estimation if tiktoken fails
+				if usageInfo.OutputTokens == 0 {
+					usageInfo.OutputTokens = int64(len(content) / 4)
+					if usageInfo.OutputTokens == 0 {
+						usageInfo.OutputTokens = 1
+					}
+				}
 			}
+
+			// 3. Update TotalTokens
+			usageInfo.TotalTokens = usageInfo.InputTokens + usageInfo.OutputTokens
 
 			appendAPIResponseChunk(ctx, e.cfg, []byte(content))
 			reporter.publish(ctx, usageInfo)
@@ -1079,7 +1151,7 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 
 			// Apply dynamic fingerprint-based headers
 			applyDynamicFingerprint(httpReq, auth)
-			
+
 			httpReq.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 			httpReq.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
 
@@ -1537,11 +1609,27 @@ func determineAgenticMode(model string) (isAgentic, isChatOnly bool) {
 }
 
 // getEffectiveProfileArn determines if profileArn should be included based on auth method.
-// profileArn is only needed for social auth (Google OAuth), not for builder-id (AWS SSO).
+// profileArn is only needed for social auth (Google OAuth), not for AWS SSO OIDC (Builder ID/IDC).
+//
+// Detection logic (matching kiro-openai-gateway):
+// 1. Check auth_method field: "builder-id" or "idc"
+// 2. Check auth_type field: "aws_sso_oidc" (from kiro-cli tokens)
+// 3. Check for client_id + client_secret presence (AWS SSO OIDC signature)
 func getEffectiveProfileArn(auth *cliproxyauth.Auth, profileArn string) string {
 	if auth != nil && auth.Metadata != nil {
-		if authMethod, ok := auth.Metadata["auth_method"].(string); ok && authMethod == "builder-id" {
-			return "" // Don't include profileArn for builder-id auth
+		// Check 1: auth_method field (from CLIProxyAPI tokens)
+		if authMethod, ok := auth.Metadata["auth_method"].(string); ok && (authMethod == "builder-id" || authMethod == "idc") {
+			return "" // AWS SSO OIDC - don't include profileArn
+		}
+		// Check 2: auth_type field (from kiro-cli tokens)
+		if authType, ok := auth.Metadata["auth_type"].(string); ok && authType == "aws_sso_oidc" {
+			return "" // AWS SSO OIDC - don't include profileArn
+		}
+		// Check 3: client_id + client_secret presence (AWS SSO OIDC signature)
+		_, hasClientID := auth.Metadata["client_id"].(string)
+		_, hasClientSecret := auth.Metadata["client_secret"].(string)
+		if hasClientID && hasClientSecret {
+			return "" // AWS SSO OIDC - don't include profileArn
 		}
 	}
 	return profileArn
@@ -1550,14 +1638,32 @@ func getEffectiveProfileArn(auth *cliproxyauth.Auth, profileArn string) string {
 // getEffectiveProfileArnWithWarning determines if profileArn should be included based on auth method,
 // and logs a warning if profileArn is missing for non-builder-id auth.
 // This consolidates the auth_method check that was previously done separately.
+//
+// AWS SSO OIDC (Builder ID/IDC) users don't need profileArn - sending it causes 403 errors.
+// Only Kiro Desktop (social auth like Google/GitHub) users need profileArn.
+//
+// Detection logic (matching kiro-openai-gateway):
+// 1. Check auth_method field: "builder-id" or "idc"
+// 2. Check auth_type field: "aws_sso_oidc" (from kiro-cli tokens)
+// 3. Check for client_id + client_secret presence (AWS SSO OIDC signature)
 func getEffectiveProfileArnWithWarning(auth *cliproxyauth.Auth, profileArn string) string {
 	if auth != nil && auth.Metadata != nil {
+		// Check 1: auth_method field (from CLIProxyAPI tokens)
 		if authMethod, ok := auth.Metadata["auth_method"].(string); ok && (authMethod == "builder-id" || authMethod == "idc") {
-			// builder-id and idc auth don't need profileArn
-			return ""
+			return "" // AWS SSO OIDC - don't include profileArn
+		}
+		// Check 2: auth_type field (from kiro-cli tokens)
+		if authType, ok := auth.Metadata["auth_type"].(string); ok && authType == "aws_sso_oidc" {
+			return "" // AWS SSO OIDC - don't include profileArn
+		}
+		// Check 3: client_id + client_secret presence (AWS SSO OIDC signature, like kiro-openai-gateway)
+		_, hasClientID := auth.Metadata["client_id"].(string)
+		_, hasClientSecret := auth.Metadata["client_secret"].(string)
+		if hasClientID && hasClientSecret {
+			return "" // AWS SSO OIDC - don't include profileArn
 		}
 	}
-	// For non-builder-id/idc auth (social auth), profileArn is required
+	// For social auth (Kiro Desktop), profileArn is required
 	if profileArn == "" {
 		log.Warnf("kiro: profile ARN not found in auth, API calls may fail")
 	}
@@ -2332,8 +2438,8 @@ func (e *KiroExecutor) extractEventTypeFromBytes(headers []byte) string {
 func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out chan<- cliproxyexecutor.StreamChunk, targetFormat sdktranslator.Format, model string, originalReq, claudeBody []byte, reporter *usageReporter, thinkingEnabled bool) {
 	reader := bufio.NewReaderSize(body, 20*1024*1024) // 20MB buffer to match other providers
 	var totalUsage usage.Detail
-	var hasToolUses bool          // Track if any tool uses were emitted
-	var upstreamStopReason string // Track stop_reason from upstream events
+	var hasToolUses bool              // Track if any tool uses were emitted
+	var upstreamStopReason string     // Track stop_reason from upstream events
 
 	// Tool use state tracking for input buffering and deduplication
 	processedIDs := make(map[string]bool)
@@ -3111,12 +3217,92 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 			_ = signature // Signature can be used for verification if needed
 
 		case "toolUseEvent":
+			// Debug: log raw toolUseEvent payload for large tool inputs
+			if log.IsLevelEnabled(log.DebugLevel) {
+				payloadStr := string(payload)
+				if len(payloadStr) > 500 {
+					payloadStr = payloadStr[:500] + "...[truncated]"
+				}
+				log.Debugf("kiro: raw toolUseEvent payload (%d bytes): %s", len(payload), payloadStr)
+			}
 			// Handle dedicated tool use events with input buffering
 			completedToolUses, newState := kiroclaude.ProcessToolUseEvent(event, currentToolUse, processedIDs)
 			currentToolUse = newState
 
 			// Emit completed tool uses
 			for _, tu := range completedToolUses {
+				// Check for truncated write marker - emit as a Bash tool that echoes the error
+				// This way Claude Code will execute it, see the error, and the agent can retry
+				if tu.Name == "__truncated_write__" {
+					filePath := ""
+					if fp, ok := tu.Input["file_path"].(string); ok && fp != "" {
+						filePath = fp
+					}
+
+					// Create a Bash tool that echoes the error message
+					// This will be executed by Claude Code and the agent will see the result
+					var errorMsg string
+					if filePath != "" {
+						errorMsg = fmt.Sprintf("echo '[WRITE TOOL ERROR] The file content for \"%s\" is too large to be transmitted by the upstream API. You MUST retry by writing the file in smaller chunks: First use Write to create the file with the first 700 lines, then use multiple Edit operations to append the remaining content in chunks of ~700 lines each.'", filePath)
+					} else {
+						errorMsg = "echo '[WRITE TOOL ERROR] The file content is too large to be transmitted by the upstream API. The Write tool input was truncated. You MUST retry by writing the file in smaller chunks: First use Write to create the file with the first 700 lines, then use multiple Edit operations to append the remaining content in chunks of ~700 lines each.'"
+					}
+
+					log.Warnf("kiro: converting truncated write to Bash echo for file: %s", filePath)
+
+					hasToolUses = true
+
+					// Close text block if open
+					if isTextBlockOpen && contentBlockIndex >= 0 {
+						blockStop := kiroclaude.BuildClaudeContentBlockStopEvent(contentBlockIndex)
+						sseData := sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, blockStop, &translatorParam)
+						for _, chunk := range sseData {
+							if chunk != "" {
+								out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunk + "\n\n")}
+							}
+						}
+						isTextBlockOpen = false
+					}
+
+					contentBlockIndex++
+
+					// Emit as Bash tool_use
+					blockStart := kiroclaude.BuildClaudeContentBlockStartEvent(contentBlockIndex, "tool_use", tu.ToolUseID, "Bash")
+					sseData := sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, blockStart, &translatorParam)
+					for _, chunk := range sseData {
+						if chunk != "" {
+							out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunk + "\n\n")}
+						}
+					}
+
+					// Emit the Bash command as input
+					bashInput := map[string]interface{}{
+						"command": errorMsg,
+					}
+					inputJSON, err := json.Marshal(bashInput)
+					if err != nil {
+						log.Errorf("kiro: failed to marshal bash input for truncated write error: %v", err)
+						continue
+					}
+					inputDelta := kiroclaude.BuildClaudeInputJsonDeltaEvent(string(inputJSON), contentBlockIndex)
+					sseData = sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, inputDelta, &translatorParam)
+					for _, chunk := range sseData {
+						if chunk != "" {
+							out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunk + "\n\n")}
+						}
+					}
+
+					blockStop := kiroclaude.BuildClaudeContentBlockStopEvent(contentBlockIndex)
+					sseData = sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, blockStop, &translatorParam)
+					for _, chunk := range sseData {
+						if chunk != "" {
+							out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunk + "\n\n")}
+						}
+					}
+
+					continue // Skip the normal tool_use emission
+				}
+
 				hasToolUses = true
 
 				// Close text block if open
