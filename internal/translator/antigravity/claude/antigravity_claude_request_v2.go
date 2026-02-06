@@ -32,7 +32,7 @@ type ClaudeMetadata struct {
 
 type ClaudeThinking struct {
 	Type         string `json:"type,omitempty"`
-	BudgetTokens int    `json:"budget_tokens,omitempty"`
+	BudgetTokens *int   `json:"budget_tokens,omitempty"`
 }
 
 type ClaudeMessage struct {
@@ -268,11 +268,13 @@ func ConvertClaudeRequestToAntigravityV2(modelName string, inputRawJSON []byte, 
 
 	// Map thinking -> thinkingConfig
 	if enableThoughtTranslate && req.Thinking != nil && req.Thinking.Type == "enabled" {
-		if req.Thinking.BudgetTokens > 0 {
-			budget := req.Thinking.BudgetTokens
+		if req.Thinking.BudgetTokens != nil {
+			budget := *req.Thinking.BudgetTokens
+			// includeThoughts is false when budget is 0, true otherwise (including -1 for dynamic)
+			includeThoughts := budget != 0
 			genConfig.ThinkingConfig = &ThinkingConfig{
 				ThinkingBudget:  &budget,
-				IncludeThoughts: true,
+				IncludeThoughts: includeThoughts,
 			}
 			hasGenConfig = true
 		}
