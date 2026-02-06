@@ -269,8 +269,9 @@ func ConvertClaudeRequestToAntigravityV2(modelName string, inputRawJSON []byte, 
 	// Map thinking -> thinkingConfig
 	if enableThoughtTranslate && req.Thinking != nil && req.Thinking.Type == "enabled" {
 		if req.Thinking.BudgetTokens > 0 {
+			budget := req.Thinking.BudgetTokens
 			genConfig.ThinkingConfig = &ThinkingConfig{
-				ThinkingBudget:  req.Thinking.BudgetTokens,
+				ThinkingBudget:  &budget,
 				IncludeThoughts: true,
 			}
 			hasGenConfig = true
