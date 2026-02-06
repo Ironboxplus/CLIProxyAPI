@@ -165,7 +165,7 @@ func ConvertClaudeRequestToAntigravityOptimized(modelName string, inputRawJSON [
 						if skip {
 							continue
 						}
-						if cache.HasValidSignature(signature) {
+						if cache.HasValidSignature(modelName, signature) {
 							currentMessageThinkingSignature = signature
 						}
 						if part != nil {
@@ -185,7 +185,7 @@ func ConvertClaudeRequestToAntigravityOptimized(modelName string, inputRawJSON [
 						}
 
 					case "tool_use":
-						part := processToolUseContent(contentResult, currentMessageThinkingSignature)
+						part := processToolUseContent(contentResult, modelName, currentMessageThinkingSignature)
 						if part != nil {
 							if role == "model" {
 								otherParts = append(otherParts, *part)
@@ -384,7 +384,7 @@ func processThinkingContent(contentResult gjson.Result, modelName, sessionID str
 	// Always try cached signature first
 	signature := ""
 	if sessionID != "" && thinkingText != "" {
-		if cachedSig := cache.GetCachedSignature(modelName, sessionID, thinkingText); cachedSig != "" {
+		if cachedSig := cache.GetCachedSignature(modelName, thinkingText); cachedSig != "" {
 			signature = cachedSig
 		}
 	}
@@ -396,7 +396,7 @@ func processThinkingContent(contentResult gjson.Result, modelName, sessionID str
 			arrayClientSignatures := strings.SplitN(signatureResult.String(), "#", 2)
 			if len(arrayClientSignatures) == 2 && modelName == arrayClientSignatures[0] {
 				clientSignature := arrayClientSignatures[1]
-				if cache.HasValidSignature(clientSignature) {
+				if cache.HasValidSignature(modelName, clientSignature) {
 					signature = clientSignature
 				}
 			}
@@ -404,7 +404,7 @@ func processThinkingContent(contentResult gjson.Result, modelName, sessionID str
 	}
 
 	// Skip unsigned thinking blocks
-	if !cache.HasValidSignature(signature) {
+	if !cache.HasValidSignature(modelName, signature) {
 		*enableThoughtTranslate = false
 		return nil, "", true
 	}
@@ -421,7 +421,7 @@ func processThinkingContent(contentResult gjson.Result, modelName, sessionID str
 }
 
 // processToolUseContent processes a tool_use content block
-func processToolUseContent(contentResult gjson.Result, currentMessageThinkingSignature string) *Part {
+func processToolUseContent(contentResult gjson.Result, modelName, currentMessageThinkingSignature string) *Part {
 	functionName := contentResult.Get("name").String()
 	argsResult := contentResult.Get("input")
 	functionID := contentResult.Get("id").String()
@@ -443,7 +443,7 @@ func processToolUseContent(contentResult gjson.Result, currentMessageThinkingSig
 
 	const skipSentinel = "skip_thought_signature_validator"
 	thoughtSig := skipSentinel
-	if cache.HasValidSignature(currentMessageThinkingSignature) {
+	if cache.HasValidSignature(modelName, currentMessageThinkingSignature) {
 		thoughtSig = currentMessageThinkingSignature
 	}
 

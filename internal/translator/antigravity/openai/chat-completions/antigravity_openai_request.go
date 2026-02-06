@@ -3,6 +3,7 @@
 package chat_completions
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 
