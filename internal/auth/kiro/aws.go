@@ -506,17 +506,14 @@ func GenerateTokenFileName(tokenData *KiroTokenData) string {
 		return fmt.Sprintf("kiro-%s-%s.json", authMethod, sanitizedEmail)
 	}
 
-	// Generate sequence only when email is unavailable
-	seq := time.Now().UnixNano() % 100000
-
-	// Priority 2: For IDC, use startUrl identifier with sequence
+	// Priority 2: For IDC, use startUrl identifier (no sequence needed, identifier is unique)
 	if authMethod == "idc" && tokenData.StartURL != "" {
 		identifier := ExtractIDCIdentifier(tokenData.StartURL)
 		if identifier != "" {
-			return fmt.Sprintf("kiro-%s-%s-%05d.json", authMethod, identifier, seq)
+			return fmt.Sprintf("kiro-%s-%s.json", authMethod, identifier)
 		}
 	}
 
-	// Priority 3: Fallback to authMethod only with sequence
-	return fmt.Sprintf("kiro-%s-%05d.json", authMethod, seq)
+	// Priority 3: Fallback to authMethod only (no sequence, single file per auth method)
+	return fmt.Sprintf("kiro-%s.json", authMethod)
 }
