@@ -1922,6 +1922,17 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 		delete(data, "toolConfig")
 	}
 
+	toolConfig, ok := request["toolConfig"].(map[string]interface{})
+	if !ok {
+		toolConfig = make(map[string]interface{})
+		request["toolConfig"] = toolConfig
+	}
+	funcCallingConfig, ok := toolConfig["functionCallingConfig"].(map[string]interface{})
+	if !ok {
+		funcCallingConfig = make(map[string]interface{})
+		toolConfig["functionCallingConfig"] = funcCallingConfig
+	}
+
 	if tools, ok := request["tools"].([]interface{}); ok {
 		for _, tool := range tools {
 			toolMap, ok := tool.(map[string]interface{})
@@ -1945,6 +1956,14 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 					}
 				}
 			}
+		}
+	}
+
+	if strings.Contains(modelName, "claude") {
+		funcCallingConfig["mode"] = "VALIDATED"
+	} else {
+		if genConfig, ok := request["generationConfig"].(map[string]interface{}); ok {
+			delete(genConfig, "maxOutputTokens")
 		}
 	}
 
