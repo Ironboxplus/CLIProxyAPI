@@ -106,14 +106,19 @@ func GetClientHelloID(fingerprint TLSFingerprint) utls.ClientHelloID {
 	}
 }
 
-// uTLSDialer wraps a dialer and applies uTLS fingerprinting
+// uTLSDialer wraps a dialer and applies uTLS fingerprinting.
+// The dialFunc field allows plugging in an upstream dialer (e.g. SOCKS5 proxy)
+// for the TCP connection, so that DialTLSContext does not bypass it.
 type uTLSDialer struct {
 	dialer      *net.Dialer
+	dialFunc    func(ctx context.Context, network, addr string) (net.Conn, error)
 	config      *tls.Config
 	fingerprint utls.ClientHelloID
 }
 
-// newUTLSDialer creates a new uTLS dialer with the specified fingerprint
+// newUTLSDialer creates a new uTLS dialer with the specified fingerprint.
+// By default it uses a standard net.Dialer for TCP connections. Callers can
+// override dialFunc after construction to route TCP through a proxy.
 func newUTLSDialer(fingerprint TLSFingerprint, tlsConfig *tls.Config) *uTLSDialer {
 	if tlsConfig == nil {
 		tlsConfig = &tls.Config{
@@ -121,17 +126,21 @@ func newUTLSDialer(fingerprint TLSFingerprint, tlsConfig *tls.Config) *uTLSDiale
 		}
 	}
 
+	d := &net.Dialer{}
 	return &uTLSDialer{
-		dialer:      &net.Dialer{},
+		dialer:      d,
+		dialFunc:    d.DialContext,
 		config:      tlsConfig,
 		fingerprint: GetClientHelloID(fingerprint),
 	}
 }
 
-// DialContext performs a TLS handshake using the specified fingerprint
+// DialContext establishes a TCP connection via dialFunc and performs a uTLS handshake.
+// Using dialFunc (instead of the raw net.Dialer) ensures that any upstream proxy
+// dialer (e.g. SOCKS5) is respected for the TCP connection.
 func (d *uTLSDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	// Establish TCP connection
-	conn, err := d.dialer.DialContext(ctx, network, addr)
+	// Establish TCP connection through the configured dial function (may be a proxy)
+	conn, err := d.dialFunc(ctx, network, addr)
 	if err != nil {
 		return nil, err
 	}
@@ -189,6 +198,14 @@ func CreateUTLSTransport(fingerprint TLSFingerprint, baseTransport *http.Transpo
 
 	// Create uTLS dialer
 	dialer := newUTLSDialer(fingerprint, transport.TLSClientConfig)
+
+	// If the base transport has a custom DialContext (e.g. SOCKS5 proxy dialer),
+	// propagate it to the uTLS dialer so that TCP connections go through the proxy
+	// instead of dialing directly. Without this, DialTLSContext would bypass the proxy
+	// because http.Transport prefers DialTLSContext over DialContext for HTTPS.
+	if baseTransport != nil && baseTransport.DialContext != nil {
+		dialer.dialFunc = baseTransport.DialContext
+	}
 
 	// Replace the DialTLS function with our uTLS implementation
 	transport.DialTLSContext = dialer.DialTLSContext

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
@@ -46,18 +47,25 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 		proxyURL = strings.TrimSpace(cfg.ProxyURL)
 	}
 
-	// If we have a proxy URL configured, try cache first to reuse TCP/TLS connections.
-	if proxyURL != "" {
-		httpClientCacheMutex.RLock()
-		if cachedClient, ok := httpClientCache[proxyURL]; ok {
-			httpClientCacheMutex.RUnlock()
-			if timeout > 0 {
-				return &http.Client{Transport: cachedClient.Transport, Timeout: timeout}
-			}
-			return cachedClient
-		}
-		httpClientCacheMutex.RUnlock()
+	// Build cache key from proxy URL and TLS fingerprint
+	cacheKey := proxyURL
+	if cfg != nil && cfg.TLSFingerprint != "" {
+		cacheKey += "|utls:" + cfg.TLSFingerprint
 	}
+
+	// Check cache first to reuse TCP/TLS connections.
+	httpClientCacheMutex.RLock()
+	if cachedClient, ok := httpClientCache[cacheKey]; ok {
+		httpClientCacheMutex.RUnlock()
+		if timeout > 0 {
+			return &http.Client{
+				Transport: cachedClient.Transport,
+				Timeout:   timeout,
+			}
+		}
+		return cachedClient
+	}
+	httpClientCacheMutex.RUnlock()
 
 	// Create new client
 	httpClient := &http.Client{}
@@ -69,10 +77,15 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	if proxyURL != "" {
 		transport := buildProxyTransport(proxyURL)
 		if transport != nil {
+			// Apply uTLS fingerprinting if configured
+			if cfg != nil && cfg.TLSFingerprint != "" {
+				fingerprint := util.TLSFingerprint(cfg.TLSFingerprint)
+				transport = util.CreateUTLSTransport(fingerprint, transport)
+			}
 			httpClient.Transport = transport
 			// Cache the client
 			httpClientCacheMutex.Lock()
-			httpClientCache[proxyURL] = httpClient
+			httpClientCache[cacheKey] = httpClient
 			httpClientCacheMutex.Unlock()
 			return httpClient
 		}
@@ -80,9 +93,18 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 		log.Debugf("failed to setup proxy from URL: %s, falling back to context transport", proxyURL)
 	}
 
-	// Priority 3: Use RoundTripper from context (typically from RoundTripperFor)
-	if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
+	// Priority 3: Apply uTLS fingerprinting even without proxy, or use RoundTripper from context
+	if cfg != nil && cfg.TLSFingerprint != "" {
+		fingerprint := util.TLSFingerprint(cfg.TLSFingerprint)
+		httpClient.Transport = util.CreateUTLSTransport(fingerprint, nil)
+	} else if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
 		httpClient.Transport = rt
+	}
+
+	if proxyURL == "" {
+		httpClientCacheMutex.Lock()
+		httpClientCache[cacheKey] = httpClient
+		httpClientCacheMutex.Unlock()
 	}
 
 	return httpClient
