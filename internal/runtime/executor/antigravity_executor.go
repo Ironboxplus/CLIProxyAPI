@@ -1561,10 +1561,10 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 		funcCallingConfig = make(map[string]interface{})
 		toolConfig["functionCallingConfig"] = funcCallingConfig
 	}
-	funcCallingConfig["mode"] = "VALIDATED"
 
 	// Handle Claude-specific tool processing
 	if strings.Contains(modelName, "claude") {
+		funcCallingConfig["mode"] = "VALIDATED"
 		if tools, ok := request["tools"].([]interface{}); ok {
 			for _, tool := range tools {
 				toolMap, ok := tool.(map[string]interface{})

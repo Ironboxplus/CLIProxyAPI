@@ -430,6 +430,25 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		}
 	}
 
+	// tool_choice -> request.toolConfig.functionCallingConfig
+	if tc := parsed.Get("tool_choice"); tc.Exists() {
+		mode := "AUTO"
+		if tc.Type == gjson.String {
+			switch strings.ToLower(tc.String()) {
+			case "none":
+				mode = "NONE"
+			case "required":
+				mode = "ANY"
+			case "auto":
+				mode = "AUTO"
+			}
+		} else if tc.IsObject() {
+			// {"type": "function", "function": {"name": "xxx"}} -> ANY with specific function
+			mode = "ANY"
+		}
+		out, _ = sjson.SetBytes(out, "request.toolConfig.functionCallingConfig.mode", mode)
+	}
+
 	return common.AttachDefaultSafetySettings(out, "request.safetySettings")
 }
 
