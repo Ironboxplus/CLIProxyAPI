@@ -68,12 +68,16 @@ func createReverseProxy(upstreamURL string, secretSource SecretSource, sdkConfig
 	proxy := httputil.NewSingleHostReverseProxy(parsed)
 
 	// Apply uTLS fingerprinting if configured
-	if sdkConfig != nil && sdkConfig.TLSFingerprint != "" && proxy.Transport != nil {
-		if transport, ok := proxy.Transport.(*http.Transport); ok {
-			fingerprint := util.TLSFingerprint(sdkConfig.TLSFingerprint)
-			proxy.Transport = util.CreateUTLSTransport(fingerprint, transport)
-			log.Debugf("amp proxy: uTLS fingerprinting enabled with profile: %s", sdkConfig.TLSFingerprint)
+	if sdkConfig != nil && sdkConfig.TLSFingerprint != "" {
+		fingerprint := util.TLSFingerprint(sdkConfig.TLSFingerprint)
+		var baseTransport *http.Transport
+		if proxy.Transport != nil {
+			if t, ok := proxy.Transport.(*http.Transport); ok {
+				baseTransport = t
+			}
 		}
+		proxy.Transport = util.CreateUTLSTransport(fingerprint, baseTransport)
+		log.Debugf("amp proxy: uTLS fingerprinting enabled with profile: %s", sdkConfig.TLSFingerprint)
 	}
 
 	originalDirector := proxy.Director

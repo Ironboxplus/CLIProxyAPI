@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/proxy"
@@ -48,8 +49,11 @@ func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 		proxyURL = strings.TrimSpace(cfg.ProxyURL)
 	}
 
-	// Build cache key from proxy URL (empty string for no proxy)
+	// Build cache key from proxy URL and TLS fingerprint
 	cacheKey := proxyURL
+	if cfg != nil && cfg.TLSFingerprint != "" {
+		cacheKey += "|utls:" + cfg.TLSFingerprint
+	}
 
 	// Check cache first
 	httpClientCacheMutex.RLock()
@@ -76,6 +80,11 @@ func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	if proxyURL != "" {
 		transport := buildProxyTransport(proxyURL)
 		if transport != nil {
+			// Apply uTLS fingerprinting if configured
+			if cfg != nil && cfg.TLSFingerprint != "" {
+				fingerprint := util.TLSFingerprint(cfg.TLSFingerprint)
+				transport = util.CreateUTLSTransport(fingerprint, transport)
+			}
 			httpClient.Transport = transport
 			// Cache the client
 			httpClientCacheMutex.Lock()
@@ -87,8 +96,11 @@ func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 		log.Debugf("failed to setup proxy from URL: %s, falling back to context transport", proxyURL)
 	}
 
-	// Priority 3: Use RoundTripper from context (typically from RoundTripperFor)
-	if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
+	// Priority 3: Apply uTLS fingerprinting even without proxy, or use RoundTripper from context
+	if cfg != nil && cfg.TLSFingerprint != "" {
+		fingerprint := util.TLSFingerprint(cfg.TLSFingerprint)
+		httpClient.Transport = util.CreateUTLSTransport(fingerprint, nil)
+	} else if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
 		httpClient.Transport = rt
 	}
 
