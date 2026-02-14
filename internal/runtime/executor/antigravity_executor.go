@@ -1291,10 +1291,8 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	}
 	payload = geminiToAntigravity(modelName, payload, projectID)
 
-	// Use optimized post-processing for Claude/Gemini models (avoids gjson/sjson)
-	if strings.Contains(modelName, "claude") || strings.Contains(modelName, "gemini-3-pro-high") {
-		payload = postProcessAntigravityPayload(payload, modelName)
-	}
+	// Apply schema cleaning and tool normalization for all models
+	payload = postProcessAntigravityPayload(payload, modelName)
 
 	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(payload))
 	if errReq != nil {
@@ -1562,16 +1560,16 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 		toolConfig["functionCallingConfig"] = funcCallingConfig
 	}
 
-	// Handle Claude-specific tool processing
-	if strings.Contains(modelName, "claude") {
-		funcCallingConfig["mode"] = "VALIDATED"
-		if tools, ok := request["tools"].([]interface{}); ok {
-			for _, tool := range tools {
-				toolMap, ok := tool.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				if funcDecls, ok := toolMap["functionDeclarations"].([]interface{}); ok {
+	// Rename parametersJsonSchema -> parameters for ALL models
+	if tools, ok := request["tools"].([]interface{}); ok {
+		for _, tool := range tools {
+			toolMap, ok := tool.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			// Handle both camelCase and snake_case key names
+			for _, declKey := range []string{"functionDeclarations", "function_declarations"} {
+				if funcDecls, ok := toolMap[declKey].([]interface{}); ok {
 					for _, funcDecl := range funcDecls {
 						funcDeclMap, ok := funcDecl.(map[string]interface{})
 						if !ok {
@@ -1589,6 +1587,11 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 				}
 			}
 		}
+	}
+
+	// Handle Claude-specific settings
+	if strings.Contains(modelName, "claude") {
+		funcCallingConfig["mode"] = "VALIDATED"
 	} else {
 		// Non-claude: delete maxOutputTokens
 		if genConfig, ok := request["generationConfig"].(map[string]interface{}); ok {
@@ -1689,21 +1692,24 @@ func postProcessAntigravityPayload(payload []byte, modelName string) []byte {
 		if tools, ok := request["tools"].([]interface{}); ok {
 			for _, tool := range tools {
 				if toolMap, ok := tool.(map[string]interface{}); ok {
-					if funcDecls, ok := toolMap["functionDeclarations"].([]interface{}); ok {
-						for _, fd := range funcDecls {
-							if fdMap, ok := fd.(map[string]interface{}); ok {
-								// Rename parametersJsonSchema to parameters and clean schema
-								if schema, exists := fdMap["parametersJsonSchema"]; exists {
-									// Clean the schema if it's a map
-									if schemaMap, isMap := schema.(map[string]interface{}); isMap {
-										cleanSchemaInPlace(schemaMap)
-									}
-									fdMap["parameters"] = schema
-									delete(fdMap, "parametersJsonSchema")
-								} else if schema, exists := fdMap["parameters"]; exists {
-									// Also clean parameters if already renamed by geminiToAntigravity
-									if schemaMap, isMap := schema.(map[string]interface{}); isMap {
-										cleanSchemaInPlace(schemaMap)
+					// Handle both camelCase and snake_case key names
+					for _, declKey := range []string{"functionDeclarations", "function_declarations"} {
+						if funcDecls, ok := toolMap[declKey].([]interface{}); ok {
+							for _, fd := range funcDecls {
+								if fdMap, ok := fd.(map[string]interface{}); ok {
+									// Rename parametersJsonSchema to parameters and clean schema
+									if schema, exists := fdMap["parametersJsonSchema"]; exists {
+										// Clean the schema if it's a map
+										if schemaMap, isMap := schema.(map[string]interface{}); isMap {
+											cleanSchemaInPlace(schemaMap)
+										}
+										fdMap["parameters"] = schema
+										delete(fdMap, "parametersJsonSchema")
+									} else if schema, exists := fdMap["parameters"]; exists {
+										// Also clean parameters if already renamed by geminiToAntigravity
+										if schemaMap, isMap := schema.(map[string]interface{}); isMap {
+											cleanSchemaInPlace(schemaMap)
+										}
 									}
 								}
 							}
@@ -1769,9 +1775,10 @@ func cleanSchemaInPlace(schema map[string]interface{}) {
 
 	// Remove unsupported keys
 	unsupportedKeys := []string{
-		"$schema", "$defs", "definitions", "propertyNames",
+		"$schema", "$id", "$defs", "definitions", "propertyNames", "patternProperties",
 		"minLength", "maxLength", "pattern", "format", "default", "examples",
 		"exclusiveMinimum", "exclusiveMaximum", "minItems", "maxItems",
+		"prefill", "enumTitles",
 	}
 	for _, key := range unsupportedKeys {
 		delete(schema, key)

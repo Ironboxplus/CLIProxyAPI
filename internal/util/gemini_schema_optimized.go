@@ -196,7 +196,8 @@ func processObjectNode(node map[string]interface{}, path string, ctx *cleanConte
 
 	// 11. Remove unsupported keywords
 	removeKeys := []string{
-		"$schema", "$defs", "definitions", "$ref", "propertyNames",
+		"$schema", "$defs", "definitions", "$ref", "$id", "propertyNames",
+		"patternProperties", "enumTitles", "prefill",
 	}
 	for _, key := range removeKeys {
 		delete(node, key)

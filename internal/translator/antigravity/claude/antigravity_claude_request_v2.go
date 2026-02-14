@@ -246,7 +246,7 @@ func ConvertClaudeRequestToAntigravityV2(modelName string, inputRawJSON []byte, 
 	}
 
 	// Handle interleaved thinking hint
-	hasThinking := req.Thinking != nil && req.Thinking.Type == "enabled"
+	hasThinking := req.Thinking != nil && (req.Thinking.Type == "enabled" || req.Thinking.Type == "adaptive")
 	isClaudeThinking := util.IsClaudeThinkingModel(modelName)
 
 	if toolDeclCount > 0 && hasThinking && isClaudeThinking {
@@ -278,6 +278,13 @@ func ConvertClaudeRequestToAntigravityV2(modelName string, inputRawJSON []byte, 
 			}
 			hasGenConfig = true
 		}
+	}
+	if enableThoughtTranslate && req.Thinking != nil && req.Thinking.Type == "adaptive" {
+		genConfig.ThinkingConfig = &ThinkingConfig{
+			ThinkingLevel:   "high",
+			IncludeThoughts: true,
+		}
+		hasGenConfig = true
 	}
 
 	if req.Temperature != nil {

@@ -89,8 +89,9 @@ type GenerationConfig struct {
 }
 
 type ThinkingConfig struct {
-	ThinkingBudget  *int `json:"thinkingBudget,omitempty"`
-	IncludeThoughts bool `json:"includeThoughts,omitempty"`
+	ThinkingBudget  *int   `json:"thinkingBudget,omitempty"`
+	ThinkingLevel   string `json:"thinkingLevel,omitempty"`
+	IncludeThoughts bool   `json:"includeThoughts,omitempty"`
 }
 
 // ConvertClaudeRequestToAntigravityOptimized is an optimized version that avoids sjson operations.
@@ -275,7 +276,8 @@ func ConvertClaudeRequestToAntigravityOptimized(modelName string, inputRawJSON [
 
 	// Handle interleaved thinking hint
 	thinkingResult := gjson.GetBytes(rawJSON, "thinking")
-	hasThinking := thinkingResult.Exists() && thinkingResult.IsObject() && thinkingResult.Get("type").String() == "enabled"
+	thinkingType := thinkingResult.Get("type").String()
+	hasThinking := thinkingResult.Exists() && thinkingResult.IsObject() && (thinkingType == "enabled" || thinkingType == "adaptive")
 	isClaudeThinking := util.IsClaudeThinkingModel(modelName)
 
 	if toolDeclCount > 0 && hasThinking && isClaudeThinking {
@@ -298,7 +300,8 @@ func ConvertClaudeRequestToAntigravityOptimized(modelName string, inputRawJSON [
 
 	// Map thinking -> thinkingConfig
 	if enableThoughtTranslate && thinkingResult.Exists() && thinkingResult.IsObject() {
-		if thinkingResult.Get("type").String() == "enabled" {
+		switch thinkingResult.Get("type").String() {
+		case "enabled":
 			if b := thinkingResult.Get("budget_tokens"); b.Exists() && b.Type == gjson.Number {
 				budget := int(b.Int())
 				genConfig.ThinkingConfig = &ThinkingConfig{
@@ -307,6 +310,12 @@ func ConvertClaudeRequestToAntigravityOptimized(modelName string, inputRawJSON [
 				}
 				hasGenConfig = true
 			}
+		case "adaptive":
+			genConfig.ThinkingConfig = &ThinkingConfig{
+				ThinkingLevel:   "high",
+				IncludeThoughts: true,
+			}
+			hasGenConfig = true
 		}
 	}
 
