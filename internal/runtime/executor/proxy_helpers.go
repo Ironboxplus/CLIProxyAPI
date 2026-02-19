@@ -149,11 +149,23 @@ func buildProxyTransport(proxyURL string) *http.Transport {
 			log.Errorf("create SOCKS5 dialer failed: %v", errSOCKS5)
 			return nil
 		}
-		// Set up a custom transport using the SOCKS5 dialer
-		transport = &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return dialer.Dial(network, addr)
-			},
+		// Set up a custom transport using the SOCKS5 dialer.
+		// proxy.SOCKS5 returns a *socks.Dialer which implements proxy.ContextDialer
+		// (has DialContext). Using DialContext instead of Dial ensures that context
+		// cancellation and deadlines are respected, so a SOCKS5 connection to an
+		// unreachable proxy does not block for the full OS TCP timeout (~2 min).
+		if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
+			transport = &http.Transport{
+				DialContext: contextDialer.DialContext,
+			}
+		} else {
+			// Fallback for dialers that don't implement ContextDialer.
+			// WARNING: context cancellation may not be respected; goroutine leak possible.
+			transport = &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					return dialer.Dial(network, addr)
+				},
+			}
 		}
 	} else if parsedURL.Scheme == "http" || parsedURL.Scheme == "https" {
 		// Configure HTTP or HTTPS proxy
