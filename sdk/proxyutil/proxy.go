@@ -108,6 +108,10 @@ func BuildHTTPTransport(raw string) (*http.Transport, Mode, error) {
 			}
 			transport := cloneDefaultTransport()
 			transport.Proxy = nil
+			if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
+				transport.DialContext = contextDialer.DialContext
+				return transport, setting.Mode, nil
+			}
 			transport.DialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
 				return dialer.Dial(network, addr)
 			}
