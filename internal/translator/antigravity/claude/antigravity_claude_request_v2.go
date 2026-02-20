@@ -442,6 +442,9 @@ func processToolResultContentV2(ci ClaudeContentItem) *Part {
 				}
 			}
 		}
+	} else {
+		// Content field is missing entirely — set empty string to avoid invalid JSON
+		response["result"] = ""
 	}
 
 	part := &Part{
