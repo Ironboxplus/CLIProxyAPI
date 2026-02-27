@@ -509,16 +509,19 @@ func GenerateTokenFileName(tokenData *KiroTokenData) string {
 		return fmt.Sprintf("kiro-%s-%s.json", authMethod, sanitizedEmail)
 	}
 
-	// Priority 2: For IDC, use startUrl identifier (no sequence needed, identifier is unique)
+	// Generate sequence only when email is unavailable
+	seq := time.Now().UnixNano() % 100000
+
+	// Priority 2: For IDC, use startUrl identifier with sequence
 	if authMethod == "idc" && tokenData.StartURL != "" {
 		identifier := ExtractIDCIdentifier(tokenData.StartURL)
 		if identifier != "" {
-			return fmt.Sprintf("kiro-%s-%s.json", authMethod, identifier)
+			return fmt.Sprintf("kiro-%s-%s-%05d.json", authMethod, identifier, seq)
 		}
 	}
 
-	// Priority 3: Fallback to authMethod only (no sequence, single file per auth method)
-	return fmt.Sprintf("kiro-%s.json", authMethod)
+	// Priority 3: Fallback to authMethod only with sequence
+	return fmt.Sprintf("kiro-%s-%05d.json", authMethod, seq)
 }
 
 // DefaultKiroRegion is the fallback region when none is specified.

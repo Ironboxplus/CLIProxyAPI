@@ -495,7 +495,7 @@ func TestReverseProxy_ErrorHandler(t *testing.T) {
 
 func TestReverseProxy_ErrorHandler_ContextCanceled(t *testing.T) {
 	// Test that context.Canceled errors return 499 without generic error response
-	proxy, err := createReverseProxy("http://example.com", NewStaticSecretSource(""))
+	proxy, err := createReverseProxy("http://example.com", NewStaticSecretSource(""), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

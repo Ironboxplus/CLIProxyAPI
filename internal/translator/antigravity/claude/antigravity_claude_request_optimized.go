@@ -54,10 +54,11 @@ type FunctionResponse struct {
 	ID       string                 `json:"id"`
 	Name     string                 `json:"name"`
 	Response map[string]interface{} `json:"response"`
+	Parts    []Part                 `json:"parts,omitempty"`
 }
 
 type InlineData struct {
-	MimeType string `json:"mime_type,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
 	Data     string `json:"data,omitempty"`
 }
 

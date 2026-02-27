@@ -418,6 +418,7 @@ func processToolResultContentV2(ci ClaudeContentItem) *Part {
 	}
 
 	response := map[string]interface{}{}
+	var imageParts []Part
 
 	// Parse content to get result
 	if len(ci.Content) > 0 {
@@ -426,19 +427,53 @@ func processToolResultContentV2(ci ClaudeContentItem) *Part {
 		if err := sonic.Unmarshal(ci.Content, &contentStr); err == nil {
 			response["result"] = contentStr
 		} else {
-			// Try as array
-			var contentArray []interface{}
+			// Try as array — extract images into FunctionResponse.Parts
+			var contentArray []json.RawMessage
 			if err := sonic.Unmarshal(ci.Content, &contentArray); err == nil {
-				if len(contentArray) == 1 {
-					response["result"] = contentArray[0]
+				var nonImageItems []interface{}
+				for _, item := range contentArray {
+					var obj map[string]interface{}
+					if err := sonic.Unmarshal(item, &obj); err != nil {
+						nonImageItems = append(nonImageItems, json.RawMessage(item))
+						continue
+					}
+					if obj["type"] == "image" {
+						if source, ok := obj["source"].(map[string]interface{}); ok && source["type"] == "base64" {
+							mimeType, _ := source["media_type"].(string)
+							data, _ := source["data"].(string)
+							imageParts = append(imageParts, Part{
+								InlineData: &InlineData{MimeType: mimeType, Data: data},
+							})
+							continue
+						}
+					}
+					nonImageItems = append(nonImageItems, obj)
+				}
+				if len(nonImageItems) == 1 {
+					response["result"] = nonImageItems[0]
+				} else if len(nonImageItems) > 1 {
+					response["result"] = nonImageItems
 				} else {
-					response["result"] = contentArray
+					response["result"] = ""
 				}
 			} else {
-				// Try as object
-				var contentObj interface{}
-				if err := sonic.Unmarshal(ci.Content, &contentObj); err == nil {
-					response["result"] = contentObj
+				// Try as object — if it's a single image, move to Parts
+				var obj map[string]interface{}
+				if err := sonic.Unmarshal(ci.Content, &obj); err == nil {
+					if obj["type"] == "image" {
+						if source, ok := obj["source"].(map[string]interface{}); ok && source["type"] == "base64" {
+							mimeType, _ := source["media_type"].(string)
+							data, _ := source["data"].(string)
+							imageParts = append(imageParts, Part{
+								InlineData: &InlineData{MimeType: mimeType, Data: data},
+							})
+							response["result"] = ""
+						} else {
+							response["result"] = obj
+						}
+					} else {
+						response["result"] = obj
+					}
 				}
 			}
 		}
@@ -447,12 +482,17 @@ func processToolResultContentV2(ci ClaudeContentItem) *Part {
 		response["result"] = ""
 	}
 
+	fr := &FunctionResponse{
+		ID:       ci.ToolUseID,
+		Name:     funcName,
+		Response: response,
+	}
+	if len(imageParts) > 0 {
+		fr.Parts = imageParts
+	}
+
 	part := &Part{
-		FunctionResponse: &FunctionResponse{
-			ID:       ci.ToolUseID,
-			Name:     funcName,
-			Response: response,
-		},
+		FunctionResponse: fr,
 	}
 
 	return part
