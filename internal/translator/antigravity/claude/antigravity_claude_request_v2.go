@@ -14,16 +14,18 @@ import (
 
 // Claude input structures for json.Unmarshal
 type ClaudeRequest struct {
-	Model       string          `json:"model,omitempty"`
-	System      json.RawMessage `json:"system,omitempty"`
-	Messages    []ClaudeMessage `json:"messages,omitempty"`
-	Tools       []ClaudeTool    `json:"tools,omitempty"`
-	Thinking    *ClaudeThinking `json:"thinking,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	TopP        *float64        `json:"top_p,omitempty"`
-	TopK        *float64        `json:"top_k,omitempty"`
-	MaxTokens   *float64        `json:"max_tokens,omitempty"`
-	Metadata    *ClaudeMetadata `json:"metadata,omitempty"`
+	Model        string              `json:"model,omitempty"`
+	System       json.RawMessage     `json:"system,omitempty"`
+	Messages     []ClaudeMessage     `json:"messages,omitempty"`
+	Tools        []ClaudeTool        `json:"tools,omitempty"`
+	ToolChoice   json.RawMessage     `json:"tool_choice,omitempty"`
+	Thinking     *ClaudeThinking     `json:"thinking,omitempty"`
+	OutputConfig *ClaudeOutputConfig `json:"output_config,omitempty"`
+	Temperature  *float64            `json:"temperature,omitempty"`
+	TopP         *float64            `json:"top_p,omitempty"`
+	TopK         *float64            `json:"top_k,omitempty"`
+	MaxTokens    *float64            `json:"max_tokens,omitempty"`
+	Metadata     *ClaudeMetadata     `json:"metadata,omitempty"`
 }
 
 type ClaudeMetadata struct {
@@ -33,6 +35,24 @@ type ClaudeMetadata struct {
 type ClaudeThinking struct {
 	Type         string `json:"type,omitempty"`
 	BudgetTokens *int   `json:"budget_tokens,omitempty"`
+}
+
+type ClaudeToolChoice struct {
+	Type string `json:"type,omitempty"`
+	Name string `json:"name,omitempty"`
+}
+
+type ClaudeOutputConfig struct {
+	Effort string `json:"effort,omitempty"`
+}
+
+type ToolConfig struct {
+	FunctionCallingConfig *FunctionCallingConfig `json:"functionCallingConfig,omitempty"`
+}
+
+type FunctionCallingConfig struct {
+	Mode                 string   `json:"mode,omitempty"`
+	AllowedFunctionNames []string `json:"allowedFunctionNames,omitempty"`
 }
 
 type ClaudeMessage struct {
@@ -245,6 +265,51 @@ func ConvertClaudeRequestToAntigravityV2(modelName string, inputRawJSON []byte, 
 		}
 	}
 
+	// tool_choice
+	if len(req.ToolChoice) > 0 {
+		toolChoiceType := ""
+		toolChoiceName := ""
+
+		var toolChoiceObj ClaudeToolChoice
+		if err := sonic.Unmarshal(req.ToolChoice, &toolChoiceObj); err == nil {
+			toolChoiceType = strings.ToLower(strings.TrimSpace(toolChoiceObj.Type))
+			toolChoiceName = strings.TrimSpace(toolChoiceObj.Name)
+		} else {
+			var toolChoiceStr string
+			if err := sonic.Unmarshal(req.ToolChoice, &toolChoiceStr); err == nil {
+				toolChoiceType = strings.ToLower(strings.TrimSpace(toolChoiceStr))
+			}
+		}
+
+		if toolChoiceType != "" {
+			if output.Request.ToolConfig == nil {
+				output.Request.ToolConfig = &ToolConfig{}
+			}
+			if output.Request.ToolConfig.FunctionCallingConfig == nil {
+				output.Request.ToolConfig.FunctionCallingConfig = &FunctionCallingConfig{}
+			}
+			fcc := output.Request.ToolConfig.FunctionCallingConfig
+			switch toolChoiceType {
+			case "auto":
+				fcc.Mode = "AUTO"
+				fcc.AllowedFunctionNames = nil
+			case "none":
+				fcc.Mode = "NONE"
+				fcc.AllowedFunctionNames = nil
+			case "any":
+				fcc.Mode = "ANY"
+				fcc.AllowedFunctionNames = nil
+			case "tool":
+				fcc.Mode = "ANY"
+				if toolChoiceName != "" {
+					fcc.AllowedFunctionNames = []string{toolChoiceName}
+				} else {
+					fcc.AllowedFunctionNames = nil
+				}
+			}
+		}
+	}
+
 	// Handle interleaved thinking hint
 	hasThinking := req.Thinking != nil && (req.Thinking.Type == "enabled" || req.Thinking.Type == "adaptive")
 	isClaudeThinking := util.IsClaudeThinkingModel(modelName)
@@ -280,8 +345,18 @@ func ConvertClaudeRequestToAntigravityV2(modelName string, inputRawJSON []byte, 
 		}
 	}
 	if enableThoughtTranslate && req.Thinking != nil && req.Thinking.Type == "adaptive" {
+		effort := ""
+		if req.OutputConfig != nil {
+			effort = strings.ToLower(strings.TrimSpace(req.OutputConfig.Effort))
+		}
+		if effort == "max" {
+			effort = "high"
+		}
+		if effort == "" {
+			effort = "high"
+		}
 		genConfig.ThinkingConfig = &ThinkingConfig{
-			ThinkingLevel:   "high",
+			ThinkingLevel:   effort,
 			IncludeThoughts: true,
 		}
 		hasGenConfig = true

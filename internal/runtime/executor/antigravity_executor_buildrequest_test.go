@@ -35,6 +35,57 @@ func TestAntigravityBuildRequest_SanitizesAntigravityToolSchema(t *testing.T) {
 	assertSchemaSanitizedAndPropertyPreserved(t, params)
 }
 
+func TestAntigravityBuildRequest_ProcessSystemInstruction_Claude(t *testing.T) {
+	body := buildRequestBodyFromPayload(t, "claude-opus-4-6")
+	assertSystemInstructionPrefixed(t, body, false)
+}
+
+func TestAntigravityBuildRequest_ProcessSystemInstruction_Gemini(t *testing.T) {
+	body := buildRequestBodyFromPayload(t, "gemini-2.5-pro")
+	assertSystemInstructionPrefixed(t, body, false)
+}
+
+func TestAntigravityBuildRequest_ProcessSystemInstruction_NonTargetModelUnchanged(t *testing.T) {
+	body := buildRequestBodyFromPayload(t, "gpt-5")
+
+	request, ok := body["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("request missing or invalid type")
+	}
+	if _, exists := request["systemInstruction"]; exists {
+		t.Fatalf("systemInstruction should not be injected for non-Claude/Gemini model")
+	}
+}
+
+func TestAntigravityBuildRequest_ProcessSystemInstruction_PreservesExistingParts(t *testing.T) {
+	executor := &AntigravityExecutor{}
+	auth := &cliproxyauth.Auth{}
+	payload := []byte(`{
+		"request": {
+			"systemInstruction": {
+				"parts": [{"text": "existing-instruction"}]
+			}
+		}
+	}`)
+
+	req, err := executor.buildRequest(context.Background(), auth, "token", "claude-opus-4-6", payload, false, "", "https://example.com")
+	if err != nil {
+		t.Fatalf("buildRequest error: %v", err)
+	}
+
+	raw, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read request body error: %v", err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("unmarshal request body error: %v, body=%s", err, string(raw))
+	}
+
+	assertSystemInstructionPrefixed(t, body, true)
+}
+
 func buildRequestBodyFromPayload(t *testing.T, modelName string) map[string]any {
 	t.Helper()
 
@@ -159,5 +210,55 @@ func assertSchemaSanitizedAndPropertyPreserved(t *testing.T, params map[string]a
 	}
 	if _, ok := mode["deprecated"]; ok {
 		t.Fatalf("deprecated should be removed from nested schema")
+	}
+}
+
+func assertSystemInstructionPrefixed(t *testing.T, body map[string]any, expectOriginalPart bool) {
+	t.Helper()
+
+	request, ok := body["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("request missing or invalid type")
+	}
+	sysInst, ok := request["systemInstruction"].(map[string]any)
+	if !ok {
+		t.Fatalf("systemInstruction missing or invalid type")
+	}
+	role, _ := sysInst["role"].(string)
+	if role != "user" {
+		t.Fatalf("systemInstruction role should be user, got %q", role)
+	}
+	parts, ok := sysInst["parts"].([]any)
+	if !ok || len(parts) < 2 {
+		t.Fatalf("systemInstruction parts missing or too short: %v", sysInst["parts"])
+	}
+	first, ok := parts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first systemInstruction part invalid type")
+	}
+	firstText, _ := first["text"].(string)
+	if firstText != systemInstruction {
+		t.Fatalf("first systemInstruction prefix mismatch")
+	}
+	second, ok := parts[1].(map[string]any)
+	if !ok {
+		t.Fatalf("second systemInstruction part invalid type")
+	}
+	secondText, _ := second["text"].(string)
+	if secondText == "" {
+		t.Fatalf("second systemInstruction prefix missing")
+	}
+	if expectOriginalPart {
+		if len(parts) < 3 {
+			t.Fatalf("expected original system instruction part to be preserved")
+		}
+		third, ok := parts[2].(map[string]any)
+		if !ok {
+			t.Fatalf("third systemInstruction part invalid type")
+		}
+		thirdText, _ := third["text"].(string)
+		if thirdText != "existing-instruction" {
+			t.Fatalf("expected preserved part text %q, got %q", "existing-instruction", thirdText)
+		}
 	}
 }

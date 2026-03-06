@@ -132,6 +132,9 @@ func (m *AmpModule) Register(ctx modules.Context) error {
 		// Store initial config for partial reload comparison
 		m.lastConfig = new(settings)
 
+		// Store SDK config for proxy initialization/reload paths
+		m.sdkConfig = &ctx.Config.SDKConfig
+
 		// Initialize localhost restriction setting (hot-reloadable)
 		m.setRestrictToLocalhost(settings.RestrictManagementToLocalhost)
 
@@ -197,6 +200,9 @@ func (m *AmpModule) OnConfigUpdated(cfg *config.Config) error {
 	if oldSettings != nil {
 		oldUpstreamURL = strings.TrimSpace(oldSettings.UpstreamURL)
 	}
+
+	// Keep sdkConfig ready before any enable/create proxy path.
+	m.sdkConfig = &cfg.SDKConfig
 
 	if !m.enabled && newUpstreamURL != "" {
 		if err := m.enableUpstreamProxy(newUpstreamURL, &newSettings); err != nil {

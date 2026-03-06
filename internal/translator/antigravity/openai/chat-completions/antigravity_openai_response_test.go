@@ -126,3 +126,35 @@ func TestNoFinishReasonOnIntermediateChunks(t *testing.T) {
 		t.Errorf("Expected no finish_reason on intermediate chunk, got: %v", fr2)
 	}
 }
+
+func TestConvertOpenAIRequestToAntigravity_ToolChoiceString(t *testing.T) {
+	input := []byte(`{
+		"model":"gpt-4o-mini",
+		"tool_choice":"required"
+	}`)
+
+	out := ConvertOpenAIRequestToAntigravity("gemini-2.5-pro", input, false)
+
+	if got := gjson.GetBytes(out, "request.toolConfig.functionCallingConfig.mode").String(); got != "ANY" {
+		t.Fatalf("expected mode ANY for string tool_choice=required, got %q: %s", got, string(out))
+	}
+	if gjson.GetBytes(out, "request.toolConfig.functionCallingConfig.allowedFunctionNames").Exists() {
+		t.Fatalf("expected no allowedFunctionNames for string tool_choice, got: %s", string(out))
+	}
+}
+
+func TestConvertOpenAIRequestToAntigravity_ToolChoiceObjectFunctionName(t *testing.T) {
+	input := []byte(`{
+		"model":"gpt-4o-mini",
+		"tool_choice":{"type":"function","function":{"name":"get_weather"}}
+	}`)
+
+	out := ConvertOpenAIRequestToAntigravity("gemini-2.5-pro", input, false)
+
+	if got := gjson.GetBytes(out, "request.toolConfig.functionCallingConfig.mode").String(); got != "ANY" {
+		t.Fatalf("expected mode ANY for object tool_choice, got %q: %s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "request.toolConfig.functionCallingConfig.allowedFunctionNames.0").String(); got != "get_weather" {
+		t.Fatalf("expected allowedFunctionNames[0]=get_weather, got %q: %s", got, string(out))
+	}
+}

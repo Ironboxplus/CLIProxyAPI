@@ -60,6 +60,9 @@ func TestAmpModule_Register_WithUpstream(t *testing.T) {
 			UpstreamURL:    upstream.URL,
 			UpstreamAPIKey: "test-key",
 		},
+		SDKConfig: config.SDKConfig{
+			TLSFingerprint: "chrome_120",
+		},
 	}
 
 	ctx := modules.Context{Engine: r, BaseHandler: base, Config: cfg, AuthMiddleware: func(c *gin.Context) { c.Next() }}
@@ -75,6 +78,12 @@ func TestAmpModule_Register_WithUpstream(t *testing.T) {
 	}
 	if m.secretSource == nil {
 		t.Fatal("secretSource should be initialized")
+	}
+	if m.sdkConfig == nil || m.sdkConfig.TLSFingerprint != "chrome_120" {
+		t.Fatalf("sdkConfig should be initialized from register config, got %+v", m.sdkConfig)
+	}
+	if m.proxy.Transport == nil {
+		t.Fatal("proxy transport should be configured when TLS fingerprint is set")
 	}
 }
 
@@ -175,6 +184,39 @@ func TestAmpModule_OnConfigUpdated_NotEnabled(t *testing.T) {
 	// Should not error or panic when disabled
 	if err := m.OnConfigUpdated(&config.Config{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAmpModule_OnConfigUpdated_EnableUpstream_InitializesSDKConfig(t *testing.T) {
+	upstream := httptest.NewServer(nil)
+	defer upstream.Close()
+
+	m := &AmpModule{enabled: false}
+	cfg := &config.Config{
+		AmpCode: config.AmpCode{
+			UpstreamURL:    upstream.URL,
+			UpstreamAPIKey: "new-key",
+		},
+		SDKConfig: config.SDKConfig{
+			TLSFingerprint: "chrome_120",
+		},
+	}
+
+	if err := m.OnConfigUpdated(cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !m.enabled {
+		t.Fatal("module should be enabled after config update with upstream URL")
+	}
+	if m.proxy == nil {
+		t.Fatal("proxy should be initialized when enabling via config update")
+	}
+	if m.sdkConfig == nil || m.sdkConfig.TLSFingerprint != "chrome_120" {
+		t.Fatalf("sdkConfig should be initialized before enableUpstreamProxy, got %+v", m.sdkConfig)
+	}
+	if m.proxy.Transport == nil {
+		t.Fatal("proxy transport should be configured when TLS fingerprint is set")
 	}
 }
 

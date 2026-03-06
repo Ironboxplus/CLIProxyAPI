@@ -26,6 +26,7 @@ type RequestContent struct {
 	SystemInstruction *ContentItem      `json:"systemInstruction,omitempty"`
 	Contents          []ContentItem     `json:"contents"`
 	Tools             []ToolDeclaration `json:"tools,omitempty"`
+	ToolConfig        *ToolConfig       `json:"toolConfig,omitempty"`
 	SafetySettings    []SafetySetting   `json:"safetySettings,omitempty"`
 	GenerationConfig  *GenerationConfig `json:"generationConfig,omitempty"`
 }

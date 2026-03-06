@@ -52,7 +52,7 @@ const (
 	antigravityAuthType            = "antigravity"
 	refreshSkew                    = 3000 * time.Second
 	antigravityCreditsRetryTTL     = 5 * time.Hour
-	// systemInstruction              = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**"
+	systemInstruction = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**"
 )
 
 type antigravity429Category string
@@ -86,6 +86,14 @@ var (
 		"minimum credit",
 		"resource has been exhausted",
 	}
+)
+
+// antigravityTransport is a singleton HTTP/1.1 transport shared by all Antigravity requests.
+// It is initialized once via antigravityTransportOnce to avoid leaking a new connection pool
+// (and the goroutines managing it) on every request.
+var (
+	antigravityTransport     *http.Transport
+	antigravityTransportOnce sync.Once
 )
 
 func cloneAntigravityModels(models []*registry.ModelInfo) []*registry.ModelInfo {
@@ -176,19 +184,10 @@ func NewAntigravityExecutor(cfg *config.Config) *AntigravityExecutor {
 	return &AntigravityExecutor{cfg: cfg}
 }
 
-// antigravityTransport is a singleton HTTP/1.1 transport shared by all Antigravity requests.
-// It is initialized once via antigravityTransportOnce to avoid leaking a new connection pool
-// (and the goroutines managing it) on every request.
-var (
-	antigravityTransport     *http.Transport
-	antigravityTransportOnce sync.Once
-)
-
 func cloneTransportWithHTTP11(base *http.Transport) *http.Transport {
 	if base == nil {
 		return nil
 	}
-
 	clone := base.Clone()
 	clone.ForceAttemptHTTP2 = false
 	// Wipe TLSNextProto to prevent implicit HTTP/2 upgrade.
@@ -283,7 +282,6 @@ func (e *AntigravityExecutor) HttpRequest(ctx context.Context, auth *cliproxyaut
 	if err := e.PrepareRequest(httpReq, auth); err != nil {
 		return nil, err
 	}
-
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
 	return httpClient.Do(httpReq)
 }
@@ -1478,6 +1476,167 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 	}
 }
 
+// FetchAntigravityModels retrieves available models using the supplied auth.
+func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
+	exec := &AntigravityExecutor{cfg: cfg}
+	token, updatedAuth, errToken := exec.ensureAccessToken(ctx, auth)
+	if errToken != nil || token == "" {
+		return fallbackAntigravityPrimaryModels()
+	}
+	if updatedAuth != nil {
+		auth = updatedAuth
+	}
+
+	baseURLs := antigravityBaseURLFallbackOrder(auth)
+	httpClient := newAntigravityHTTPClient(ctx, cfg, auth, 0)
+
+	for idx, baseURL := range baseURLs {
+		modelsURL := baseURL + antigravityModelsPath
+
+		var payload []byte
+		if auth != nil && auth.Metadata != nil {
+			if pid, ok := auth.Metadata["project_id"].(string); ok && strings.TrimSpace(pid) != "" {
+				payload = []byte(fmt.Sprintf(`{"project": "%s"}`, strings.TrimSpace(pid)))
+			}
+		}
+		if len(payload) == 0 {
+			payload = []byte(`{}`)
+		}
+
+		httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, modelsURL, bytes.NewReader(payload))
+		if errReq != nil {
+			return fallbackAntigravityPrimaryModels()
+		}
+		httpReq.Close = true
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+token)
+		httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
+		if host := resolveHost(baseURL); host != "" {
+			httpReq.Host = host
+		}
+
+		httpResp, errDo := httpClient.Do(httpReq)
+		if errDo != nil {
+			if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
+				return fallbackAntigravityPrimaryModels()
+			}
+			if idx+1 < len(baseURLs) {
+				log.Debugf("antigravity executor: models request error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+				continue
+			}
+			return fallbackAntigravityPrimaryModels()
+		}
+
+		bodyBytes, errRead := io.ReadAll(httpResp.Body)
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("antigravity executor: close response body error: %v", errClose)
+		}
+		if errRead != nil {
+			if idx+1 < len(baseURLs) {
+				log.Debugf("antigravity executor: models read error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+				continue
+			}
+			return fallbackAntigravityPrimaryModels()
+		}
+		if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+			if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
+				log.Debugf("antigravity executor: models request rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+				continue
+			}
+			if idx+1 < len(baseURLs) {
+				log.Debugf("antigravity executor: models request failed with status %d on base url %s, retrying with fallback base url: %s", httpResp.StatusCode, baseURL, baseURLs[idx+1])
+				continue
+			}
+			return fallbackAntigravityPrimaryModels()
+		}
+
+		result := gjson.GetBytes(bodyBytes, "models")
+		if !result.Exists() {
+			if idx+1 < len(baseURLs) {
+				log.Debugf("antigravity executor: models field missing on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+				continue
+			}
+			return fallbackAntigravityPrimaryModels()
+		}
+
+		now := time.Now().Unix()
+		modelConfig := registry.GetAntigravityModelConfig()
+		models := make([]*registry.ModelInfo, 0, len(result.Map()))
+		for originalName, modelData := range result.Map() {
+			modelID := strings.TrimSpace(originalName)
+			if modelID == "" {
+				continue
+			}
+			switch modelID {
+			case "chat_20706", "chat_23310", "tab_flash_lite_preview", "tab_jump_flash_lite_preview", "gemini-2.5-flash-thinking", "gemini-2.5-pro":
+				continue
+			}
+			modelCfg := modelConfig[modelID]
+
+			// Extract displayName from upstream response, fallback to modelID
+			displayName := modelData.Get("displayName").String()
+			if displayName == "" {
+				displayName = modelID
+			}
+
+			modelInfo := &registry.ModelInfo{
+				ID:          modelID,
+				Name:        modelID,
+				Description: displayName,
+				DisplayName: displayName,
+				Version:     modelID,
+				Object:      "model",
+				Created:     now,
+				OwnedBy:     antigravityAuthType,
+				Type:        antigravityAuthType,
+			}
+
+			// Build input modalities from upstream capability flags.
+			inputModalities := []string{"TEXT"}
+			if modelData.Get("supportsImages").Bool() {
+				inputModalities = append(inputModalities, "IMAGE")
+			}
+			if modelData.Get("supportsVideo").Bool() {
+				inputModalities = append(inputModalities, "VIDEO")
+			}
+			modelInfo.SupportedInputModalities = inputModalities
+			modelInfo.SupportedOutputModalities = []string{"TEXT"}
+
+			// Token limits from upstream.
+			if maxTok := modelData.Get("maxTokens").Int(); maxTok > 0 {
+				modelInfo.InputTokenLimit = int(maxTok)
+			}
+			if maxOut := modelData.Get("maxOutputTokens").Int(); maxOut > 0 {
+				modelInfo.OutputTokenLimit = int(maxOut)
+			}
+
+			// Supported generation methods (Gemini v1beta convention).
+			modelInfo.SupportedGenerationMethods = []string{"generateContent", "countTokens"}
+
+			// Look up Thinking support from static config using upstream model name.
+			if modelCfg != nil {
+				if modelCfg.Thinking != nil {
+					modelInfo.Thinking = modelCfg.Thinking
+				}
+				if modelCfg.MaxCompletionTokens > 0 {
+					modelInfo.MaxCompletionTokens = modelCfg.MaxCompletionTokens
+				}
+			}
+			models = append(models, modelInfo)
+		}
+		if len(models) == 0 {
+			if idx+1 < len(baseURLs) {
+				log.Debugf("antigravity executor: empty models list on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+				continue
+			}
+			log.Debug("antigravity executor: fetched empty model list; retaining cached primary model list")
+			return fallbackAntigravityPrimaryModels()
+		}
+		storeAntigravityPrimaryModels(models)
+		return models
+	}
+	return fallbackAntigravityPrimaryModels()
+}
 func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *cliproxyauth.Auth) (string, *cliproxyauth.Auth, error) {
 	if auth == nil {
 		return "", nil, statusErr{code: http.StatusUnauthorized, msg: "missing auth"}
@@ -1880,10 +2039,11 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 		return geminiToAntigravityLegacy(modelName, payload, projectID)
 	}
 
+	isImageModel := strings.Contains(modelName, "image")
+
+	// Set top-level fields
 	data["model"] = modelName
 	data["userAgent"] = "antigravity"
-
-	isImageModel := strings.Contains(modelName, "image")
 	if isImageModel {
 		data["requestType"] = "image_gen"
 	} else {
@@ -1896,12 +2056,14 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 		data["project"] = generateProjectID()
 	}
 
+	// Set request ID and session ID (image models use a different ID scheme)
 	if isImageModel {
 		data["requestId"] = generateImageGenRequestID()
 	} else {
 		data["requestId"] = generateRequestID()
 	}
 
+	// Handle request object (agent requests only need sessionId; image requests skip it)
 	request, ok := data["request"].(map[string]interface{})
 	if !ok {
 		request = make(map[string]interface{})
@@ -1909,6 +2071,7 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 	}
 
 	if !isImageModel {
+		// Set session ID for non-image requests
 		request["sessionId"] = generateStableSessionID(payload)
 	}
 
@@ -2107,8 +2270,8 @@ func postProcessAntigravityPayload(payload []byte, modelName string) []byte {
 			}
 		}
 
-		// Process systemInstruction only for Claude/Gemini models
-		if strings.Contains(modelName, "claude") || strings.Contains(modelName, "gemini") {
+		// Process systemInstruction for Claude/Gemini models
+		if shouldProcessSystemInstruction(modelName) {
 			processSystemInstruction(request)
 		}
 	}
@@ -2166,7 +2329,7 @@ func cleanSchemaInPlace(schema map[string]interface{}) {
 	// Remove unsupported keys
 	unsupportedKeys := []string{
 		"$schema", "$id", "$defs", "definitions", "propertyNames", "patternProperties",
-		"minLength", "maxLength", "pattern", "format", "default", "examples",
+		"minLength", "maxLength", "pattern", "format", "default", "examples", "deprecated",
 		"exclusiveMinimum", "exclusiveMaximum", "minItems", "maxItems",
 		"prefill", "enumTitles",
 	}
@@ -2195,6 +2358,14 @@ func cleanSchemaInPlace(schema map[string]interface{}) {
 			}
 		}
 	}
+}
+
+func shouldProcessSystemInstruction(modelName string) bool {
+	modelName = strings.ToLower(strings.TrimSpace(modelName))
+	if modelName == "" {
+		return false
+	}
+	return strings.Contains(modelName, "claude") || strings.Contains(modelName, "gemini")
 }
 
 // processSystemInstruction modifies the system instruction for Claude/Gemini models
