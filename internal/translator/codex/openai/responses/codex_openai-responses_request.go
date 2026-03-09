@@ -9,6 +9,10 @@ import (
 )
 
 func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte, _ bool) []byte {
+	return convertOpenAIResponsesRequestToCodexV2(modelName, inputRawJSON)
+}
+
+func convertOpenAIResponsesRequestToCodexLegacy(modelName string, inputRawJSON []byte) []byte {
 	rawJSON := inputRawJSON
 
 	inputResult := gjson.GetBytes(rawJSON, "input")

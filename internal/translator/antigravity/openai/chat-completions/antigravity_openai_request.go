@@ -483,11 +483,6 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		} else if tc.IsObject() {
 			// {"type": "function", "function": {"name": "xxx"}} -> ANY with specific function
 			mode = "ANY"
-			if strings.EqualFold(tc.Get("type").String(), "function") {
-				if fn := strings.TrimSpace(tc.Get("function.name").String()); fn != "" {
-					out, _ = sjson.SetBytes(out, "request.toolConfig.functionCallingConfig.allowedFunctionNames", []string{fn})
-				}
-			}
 		}
 		out, _ = sjson.SetBytes(out, "request.toolConfig.functionCallingConfig.mode", mode)
 	}
