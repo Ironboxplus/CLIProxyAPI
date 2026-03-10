@@ -27,6 +27,15 @@ import (
 // Returns:
 //   - []byte: The transformed request data in OpenAI chat completions format
 func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inputRawJSON []byte, stream bool) []byte {
+	return convertOpenAIResponsesRequestToOpenAIChatCompletionsV2(modelName, inputRawJSON, stream)
+}
+
+// ConvertOpenAIResponsesRequestToOpenAIChatCompletionsV2 exposes the optimized translator for tests and benchmarks.
+func ConvertOpenAIResponsesRequestToOpenAIChatCompletionsV2(modelName string, inputRawJSON []byte, stream bool) []byte {
+	return convertOpenAIResponsesRequestToOpenAIChatCompletionsV2(modelName, inputRawJSON, stream)
+}
+
+func convertOpenAIResponsesRequestToOpenAIChatCompletionsLegacy(modelName string, inputRawJSON []byte, stream bool) []byte {
 	rawJSON := inputRawJSON
 	// Base OpenAI chat completions template with default values
 	out := []byte(`{"model":"","messages":[],"stream":false}`)

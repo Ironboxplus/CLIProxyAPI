@@ -3,6 +3,8 @@
 package chat_completions
 
 import (
+	"encoding/json"
+
 	"github.com/tidwall/sjson"
 )
 
@@ -16,7 +18,21 @@ import (
 //
 // Returns:
 //   - []byte: The transformed request data in Gemini CLI API format
-func ConvertOpenAIRequestToOpenAI(modelName string, inputRawJSON []byte, _ bool) []byte {
+func ConvertOpenAIRequestToOpenAI(modelName string, inputRawJSON []byte, stream bool) []byte {
+	return convertOpenAIRequestToOpenAILegacy(modelName, inputRawJSON, stream)
+}
+
+// ConvertOpenAIRequestToOpenAIV2 exposes the optimized translator for tests and benchmarks.
+func ConvertOpenAIRequestToOpenAIV2(modelName string, inputRawJSON []byte, stream bool) []byte {
+	return convertOpenAIRequestToOpenAIV2(modelName, inputRawJSON, stream)
+}
+
+// convertOpenAIRequestToOpenAILegacy preserves the original sjson-based translator
+// as a battle-tested fallback for malformed or unsupported edge inputs.
+func convertOpenAIRequestToOpenAILegacy(modelName string, inputRawJSON []byte, _ bool) []byte {
+	if !json.Valid(inputRawJSON) {
+		return inputRawJSON
+	}
 	// Update the "model" field in the JSON payload with the provided modelName
 	// The sjson.SetBytes function returns a new byte slice with the updated JSON.
 	updatedJSON, err := sjson.SetBytes(inputRawJSON, "model", modelName)

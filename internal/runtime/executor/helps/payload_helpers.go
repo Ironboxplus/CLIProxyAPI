@@ -151,6 +151,39 @@ func ApplyPayloadConfigWithRoot(cfg *config.Config, model, protocol, root string
 	return out
 }
 
+// hasPayloadRulesForModel reports whether any payload rule applies to the provided model/protocol.
+// This is a fast pre-check to skip applyPayloadConfigWithRoot when no rules can match.
+func hasPayloadRulesForModel(cfg *config.Config, model, protocol, requestedModel string) bool {
+	if cfg == nil {
+		return false
+	}
+	rules := cfg.Payload
+	if len(rules.Default) == 0 && len(rules.DefaultRaw) == 0 && len(rules.Override) == 0 && len(rules.OverrideRaw) == 0 && len(rules.Filter) == 0 {
+		return false
+	}
+	candidates := payloadModelCandidates(model, requestedModel)
+	if len(candidates) == 0 {
+		return false
+	}
+	check := func(list []config.PayloadRule) bool {
+		for i := range list {
+			if payloadModelRulesMatch(list[i].Models, protocol, candidates) {
+				return true
+			}
+		}
+		return false
+	}
+	if check(rules.Default) || check(rules.DefaultRaw) || check(rules.Override) || check(rules.OverrideRaw) {
+		return true
+	}
+	for i := range rules.Filter {
+		if payloadModelRulesMatch(rules.Filter[i].Models, protocol, candidates) {
+			return true
+		}
+	}
+	return false
+}
+
 func payloadModelRulesMatch(rules []config.PayloadModelRule, protocol string, models []string) bool {
 	if len(rules) == 0 || len(models) == 0 {
 		return false
