@@ -149,6 +149,15 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		b, _ := io.ReadAll(httpResp.Body)
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
+		if opts.Alt == "responses/compact" && httpResp.StatusCode == http.StatusNotFound {
+			helps.LogWithRequestID(ctx).Debug("openai compat executor: /responses/compact not supported upstream, falling back to /chat/completions")
+			fallbackResp, fallbackErr := e.executeCompactFallback(ctx, auth, req, opts, baseModel, from, reporter)
+			if fallbackErr == nil {
+				return fallbackResp, nil
+			}
+			err = fallbackErr
+			return resp, err
+		}
 		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
 		return resp, err
 	}
@@ -387,6 +396,83 @@ func (e *OpenAICompatExecutor) translateOpenAICompatPayload(req cliproxyexecutor
 	}
 	translated = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
 	return translated
+}
+
+func (e *OpenAICompatExecutor) executeCompactFallback(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, baseModel string, from sdktranslator.Format, reporter *usageReporter) (cliproxyexecutor.Response, error) {
+	baseURL, apiKey := e.resolveCredentials(auth)
+	if baseURL == "" {
+		return cliproxyexecutor.Response{}, statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
+	}
+
+	to := sdktranslator.FromString("openai")
+	translated := e.translateOpenAICompatPayload(req, opts, baseModel, to, false)
+	translated, err := thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
+	if err != nil {
+		return cliproxyexecutor.Response{}, err
+	}
+	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
+	if err != nil {
+		return cliproxyexecutor.Response{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	httpReq.Header.Set("User-Agent", "cli-proxy-openai-compat")
+	var attrs map[string]string
+	if auth != nil {
+		attrs = auth.Attributes
+	}
+	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
+		URL:       url,
+		Method:    http.MethodPost,
+		Headers:   httpReq.Header.Clone(),
+		Body:      translated,
+		Provider:  e.Identifier(),
+		AuthID:    authID,
+		AuthLabel: authLabel,
+		AuthType:  authType,
+		AuthValue: authValue,
+	})
+
+	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		recordAPIResponseError(ctx, e.cfg, err)
+		return cliproxyexecutor.Response{}, err
+	}
+	defer func() {
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("openai compat executor: close response body error: %v", errClose)
+		}
+	}()
+	recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		b, _ := io.ReadAll(httpResp.Body)
+		appendAPIResponseChunk(ctx, e.cfg, b)
+		return cliproxyexecutor.Response{}, statusErr{code: httpResp.StatusCode, msg: string(b)}
+	}
+	body, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		recordAPIResponseError(ctx, e.cfg, err)
+		return cliproxyexecutor.Response{}, err
+	}
+	appendAPIResponseChunk(ctx, e.cfg, body)
+	if reporter != nil {
+		reporter.publish(ctx, parseOpenAIUsage(body))
+		reporter.ensurePublished(ctx)
+	}
+	var param any
+	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, body, &param)
+	return cliproxyexecutor.Response{Payload: []byte(out), Headers: httpResp.Header.Clone()}, nil
 }
 
 type statusErr struct {

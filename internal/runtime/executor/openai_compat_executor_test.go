@@ -182,3 +182,43 @@ func TestOpenAICompatExecutor_ExecuteStream_PassesChunks(t *testing.T) {
 		t.Fatalf("chunk payload = %s", got[0])
 	}
 }
+
+func TestOpenAICompatExecutor_CompactFallbackToChatCompletions(t *testing.T) {
+	var gotPaths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/responses/compact":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("Not Found"))
+		case "/v1/chat/completions":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"hi"}}]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+	}}
+	payload := []byte(`{"model":"gpt-test","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-test",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Alt:          "responses/compact",
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if len(gotPaths) != 2 || gotPaths[0] != "/v1/responses/compact" || gotPaths[1] != "/v1/chat/completions" {
+		t.Fatalf("paths = %v, want /v1/responses/compact then /v1/chat/completions", gotPaths)
+	}
+	if gjson.GetBytes(resp.Payload, "object").String() != "response" {
+		t.Fatalf("expected responses output, got %s", string(resp.Payload))
+	}
+}
