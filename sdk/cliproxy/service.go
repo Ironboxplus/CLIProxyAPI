@@ -213,6 +213,22 @@ func (s *Service) handleAuthUpdate(ctx context.Context, update watcher.AuthUpdat
 	}
 }
 
+func (s *Service) syncWatcherSnapshotAuths(ctx context.Context) {
+	if s == nil || s.watcher == nil || s.coreManager == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = coreauth.WithSkipPersist(ctx)
+	for _, auth := range s.watcher.SnapshotAuths() {
+		if auth == nil || strings.TrimSpace(auth.ID) == "" {
+			continue
+		}
+		s.applyCoreAuthAddOrUpdate(ctx, auth)
+	}
+}
+
 func (s *Service) ensureWebsocketGateway() {
 	if s == nil {
 		return
@@ -719,6 +735,7 @@ func (s *Service) Run(ctx context.Context) error {
 		return fmt.Errorf("cliproxy: failed to start watcher: %w", err)
 	}
 	log.Info("file watcher started for config and auth directory changes")
+	s.syncWatcherSnapshotAuths(ctx)
 
 	// Prefer core auth manager auto refresh if available.
 	if s.coreManager != nil {
