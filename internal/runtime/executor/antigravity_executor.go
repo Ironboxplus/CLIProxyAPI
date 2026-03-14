@@ -86,6 +86,12 @@ var (
 		"minimum credit",
 		"resource has been exhausted",
 	}
+	// antigravityPrimaryModelsCache keeps the latest non-empty model list fetched
+	// from any antigravity auth. Empty fetches never overwrite this cache.
+	antigravityPrimaryModelsCache struct {
+		mu     sync.RWMutex
+		models []*registry.ModelInfo
+	}
 )
 
 // antigravityTransport is a singleton HTTP/1.1 transport shared by all Antigravity requests.
@@ -167,6 +173,24 @@ func fallbackAntigravityPrimaryModels() []*registry.ModelInfo {
 		log.Debugf("antigravity executor: using cached primary model list (%d models)", len(models))
 	}
 	return models
+}
+
+func antigravityModelOverridesByID() map[string]*registry.ModelInfo {
+	models := registry.GetAntigravityModels()
+	if len(models) == 0 {
+		return nil
+	}
+	out := make(map[string]*registry.ModelInfo, len(models))
+	for _, model := range models {
+		if model == nil || strings.TrimSpace(model.ID) == "" {
+			continue
+		}
+		out[model.ID] = model
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 // AntigravityExecutor proxies requests to the antigravity upstream.
 type AntigravityExecutor struct {
@@ -1560,7 +1584,7 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 		}
 
 		now := time.Now().Unix()
-		modelConfig := registry.GetAntigravityModelConfig()
+		modelConfig := antigravityModelOverridesByID()
 		models := make([]*registry.ModelInfo, 0, len(result.Map()))
 		for originalName, modelData := range result.Map() {
 			modelID := strings.TrimSpace(originalName)
