@@ -8,6 +8,22 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func BenchmarkConvertClaudeRequestToAntigravity_Small_V2(b *testing.B) {
+	benchmarkConvertClaudeRequestToAntigravity(b, smallClaudePayload(), false)
+}
+
+func BenchmarkConvertClaudeRequestToAntigravity_Small_Legacy(b *testing.B) {
+	benchmarkConvertClaudeRequestToAntigravity(b, smallClaudePayload(), true)
+}
+
+func BenchmarkConvertClaudeRequestToAntigravity_Complex_V2(b *testing.B) {
+	benchmarkConvertClaudeRequestToAntigravity(b, complexClaudePayload(), false)
+}
+
+func BenchmarkConvertClaudeRequestToAntigravity_Complex_Legacy(b *testing.B) {
+	benchmarkConvertClaudeRequestToAntigravity(b, complexClaudePayload(), true)
+}
+
 func TestConvertClaudeRequestToAntigravity_BasicStructure(t *testing.T) {
 	inputJSON := []byte(`{
 		"model": "claude-3-5-sonnet-20240620",
@@ -52,6 +68,74 @@ func TestConvertClaudeRequestToAntigravity_BasicStructure(t *testing.T) {
 	if sysInstruction.Get("parts.0.text").String() != "You are helpful" {
 		t.Error("systemInstruction text mismatch")
 	}
+}
+
+func benchmarkConvertClaudeRequestToAntigravity(b *testing.B, payload []byte, useLegacy bool) {
+	b.ReportAllocs()
+	b.SetBytes(int64(len(payload)))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		if useLegacy {
+			_ = convertClaudeRequestToAntigravityLegacy("claude-sonnet-4-5", payload, false)
+			continue
+		}
+		_ = ConvertClaudeRequestToAntigravity("claude-sonnet-4-5", payload, false)
+	}
+}
+
+func smallClaudePayload() []byte {
+	return []byte(`{
+		"model": "claude-3-5-sonnet-20240620",
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "Hello"}]}
+		],
+		"system": [{"type": "text", "text": "You are helpful"}],
+		"temperature": 0.2
+	}`)
+}
+
+func complexClaudePayload() []byte {
+	return []byte(`{
+		"model": "claude-sonnet-4-5-thinking",
+		"messages": [
+			{
+				"role": "user",
+				"content": [{"type": "text", "text": "Summarize and call the tool."}]
+			},
+			{
+				"role": "assistant",
+				"content": [
+					{"type": "thinking", "thinking": "Let me think...", "signature": "abc123validSignature1234567890123456789012345678901234567890"},
+					{"type": "text", "text": "Answer"}
+				]
+			}
+		],
+		"tools": [
+			{
+				"name": "summarize",
+				"description": "Summarize input",
+				"input_schema": {
+					"type": "object",
+					"properties": {
+						"mode": {"type": "string", "enum": ["short", "long"]},
+						"verbose": {"type": "boolean"},
+						"options": {
+							"type": "object",
+							"properties": {
+								"detail": {"type": "string"},
+								"count": {"type": "integer"}
+							}
+						}
+					},
+					"required": ["mode"]
+				}
+			}
+		],
+		"tool_choice": {"type": "tool", "name": "summarize"},
+		"temperature": 0.4,
+		"top_p": 0.9
+	}`)
 }
 
 func TestConvertClaudeRequestToAntigravity_RoleMapping(t *testing.T) {

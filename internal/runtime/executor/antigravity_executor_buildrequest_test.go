@@ -9,6 +9,14 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
+func BenchmarkAntigravityBuildRequest_Claude(b *testing.B) {
+	benchmarkAntigravityBuildRequest(b, "claude-opus-4-6")
+}
+
+func BenchmarkAntigravityBuildRequest_Gemini(b *testing.B) {
+	benchmarkAntigravityBuildRequest(b, "gemini-2.5-pro")
+}
+
 func TestAntigravityBuildRequest_SanitizesGeminiToolSchema(t *testing.T) {
 	body := buildRequestBodyFromPayload(t, "gemini-2.5-pro")
 
@@ -143,6 +151,66 @@ func buildRequestBodyFromPayload(t *testing.T, modelName string) map[string]any 
 		t.Fatalf("unmarshal request body error: %v, body=%s", err, string(raw))
 	}
 	return body
+}
+
+func benchmarkAntigravityBuildRequest(b *testing.B, modelName string) {
+	b.Helper()
+
+	executor := &AntigravityExecutor{}
+	auth := &cliproxyauth.Auth{}
+	payload := []byte(`{
+		"request": {
+			"systemInstruction": {
+				"parts": [{"text": "benchmark-system"}]
+			},
+			"tools": [
+				{
+					"function_declarations": [
+						{
+							"name": "tool_1",
+							"parametersJsonSchema": {
+								"$schema": "http://json-schema.org/draft-07/schema#",
+								"$id": "root-schema",
+								"type": "object",
+								"properties": {
+									"$id": {"type": "string"},
+									"arg": {
+										"type": "object",
+										"prefill": "hello",
+										"properties": {
+											"mode": {
+												"type": "string",
+												"deprecated": true,
+												"enum": ["a", "b"],
+												"enumTitles": ["A", "B"]
+											}
+										}
+									}
+								},
+								"patternProperties": {
+									"^x-": {"type": "string"}
+								}
+							}
+						}
+					]
+				}
+			]
+		}
+	}`)
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(payload)))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		req, err := executor.buildRequest(context.Background(), auth, "token", modelName, payload, false, "", "https://example.com")
+		if err != nil {
+			b.Fatalf("buildRequest error: %v", err)
+		}
+		if req != nil && req.Body != nil {
+			req.Body.Close()
+		}
+	}
 }
 
 func extractFirstFunctionDeclaration(t *testing.T, body map[string]any) map[string]any {
