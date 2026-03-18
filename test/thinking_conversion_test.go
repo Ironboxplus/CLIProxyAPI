@@ -2396,6 +2396,17 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectField: "",
 			expectErr:   true,
 		},
+		// Case 83a: OpenAI-Response to Codex, chat-style reasoning_effort=high → normalized to reasoning.effort
+		{
+			name:        "83a",
+			from:        "openai-response",
+			to:          "codex",
+			model:       "level-model",
+			inputJSON:   `{"model":"level-model","input":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`,
+			expectField: "reasoning.effort",
+			expectValue: "high",
+			expectErr:   false,
+		},
 		// Case 84: Gemini to Gemini, thinkingBudget=8192 → passthrough
 		{
 			name:            "84",

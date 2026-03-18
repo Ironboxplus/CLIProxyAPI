@@ -364,3 +364,83 @@ func TestTruncationRemovedForCodexCompatibility(t *testing.T) {
 		t.Fatalf("truncation should be removed for Codex compatibility")
 	}
 }
+
+func TestConvertOpenAIResponsesRequestToCodex_NormalizesReasoningEffortCompatibility(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "gpt-5.2",
+		"reasoning_effort": "HIGH",
+		"input": [{"role":"user","content":"hello"}]
+	}`)
+
+	output := ConvertOpenAIResponsesRequestToCodex("gpt-5.2", inputJSON, false)
+	outputStr := string(output)
+
+	if got := gjson.Get(outputStr, "reasoning.effort").String(); got != "high" {
+		t.Fatalf("reasoning.effort = %q, want %q", got, "high")
+	}
+	if gjson.Get(outputStr, "reasoning_effort").Exists() {
+		t.Fatalf("reasoning_effort should be removed after compatibility normalization")
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToCodex_PrefersNestedReasoningEffort(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "gpt-5.2",
+		"reasoning_effort": "low",
+		"reasoning": {"effort":"high","summary":"auto"},
+		"input": [{"role":"user","content":"hello"}]
+	}`)
+
+	output := ConvertOpenAIResponsesRequestToCodex("gpt-5.2", inputJSON, false)
+	outputStr := string(output)
+
+	if got := gjson.Get(outputStr, "reasoning.effort").String(); got != "high" {
+		t.Fatalf("reasoning.effort = %q, want %q", got, "high")
+	}
+	if got := gjson.Get(outputStr, "reasoning.summary").String(); got != "auto" {
+		t.Fatalf("reasoning.summary = %q, want %q", got, "auto")
+	}
+	if gjson.Get(outputStr, "reasoning_effort").Exists() {
+		t.Fatalf("reasoning_effort should be removed when nested reasoning already exists")
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToCodex_RecoversMalformedNestedReasoningEffort(t *testing.T) {
+	testCases := []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "null nested effort",
+			raw: `{
+				"model": "gpt-5.2",
+				"reasoning_effort": "high",
+				"reasoning": {"effort": null},
+				"input": [{"role":"user","content":"hello"}]
+			}`,
+		},
+		{
+			name: "empty nested effort",
+			raw: `{
+				"model": "gpt-5.2",
+				"reasoning_effort": "high",
+				"reasoning": {"effort": ""},
+				"input": [{"role":"user","content":"hello"}]
+			}`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			output := ConvertOpenAIResponsesRequestToCodex("gpt-5.2", []byte(tc.raw), false)
+			outputStr := string(output)
+
+			if got := gjson.Get(outputStr, "reasoning.effort").String(); got != "high" {
+				t.Fatalf("reasoning.effort = %q, want %q", got, "high")
+			}
+			if gjson.Get(outputStr, "reasoning_effort").Exists() {
+				t.Fatalf("reasoning_effort should be removed after compatibility normalization")
+			}
+		})
+	}
+}

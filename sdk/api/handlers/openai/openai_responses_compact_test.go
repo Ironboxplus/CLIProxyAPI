@@ -14,11 +14,13 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	"github.com/tidwall/gjson"
 )
 
 type compactCaptureExecutor struct {
 	alt          string
 	sourceFormat string
+	payload      []byte
 	calls        int
 }
 
@@ -28,6 +30,7 @@ func (e *compactCaptureExecutor) Execute(ctx context.Context, auth *coreauth.Aut
 	e.calls++
 	e.alt = opts.Alt
 	e.sourceFormat = opts.SourceFormat.String()
+	e.payload = append(e.payload[:0], req.Payload...)
 	return coreexecutor.Response{Payload: []byte(`{"ok":true}`)}, nil
 }
 
@@ -100,7 +103,7 @@ func TestOpenAIResponsesCompactExecute(t *testing.T) {
 	router := gin.New()
 	router.POST("/v1/responses/compact", h.Compact)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{"model":"test-model","input":"hello"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{"model":"test-model","input":"hello","reasoning_effort":"HIGH"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp := httptest.NewRecorder()
 	router.ServeHTTP(resp, req)
@@ -113,6 +116,12 @@ func TestOpenAIResponsesCompactExecute(t *testing.T) {
 	}
 	if executor.sourceFormat != "openai-response" {
 		t.Fatalf("source format = %q, want %q", executor.sourceFormat, "openai-response")
+	}
+	if got := gjson.GetBytes(executor.payload, "reasoning.effort").String(); got != "high" {
+		t.Fatalf("reasoning.effort = %q, want %q", got, "high")
+	}
+	if gjson.GetBytes(executor.payload, "reasoning_effort").Exists() {
+		t.Fatalf("reasoning_effort should be removed before forwarding compact request")
 	}
 	if strings.TrimSpace(resp.Body.String()) != `{"ok":true}` {
 		t.Fatalf("body = %s", resp.Body.String())

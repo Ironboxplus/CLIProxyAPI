@@ -50,6 +50,14 @@ func TestConvertOpenAIResponsesRequestToCodex_ParityWithLegacy(t *testing.T) {
 				"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Hello"}]}]
 			}`,
 		},
+		{
+			name: "chat style reasoning_effort normalized",
+			input: `{
+				"model":"gpt-5.2",
+				"reasoning_effort":"high",
+				"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Hello"}]}]
+			}`,
+		},
 	}
 
 	for _, tc := range testCases {

@@ -2,6 +2,7 @@ package responses
 
 import (
 	"fmt"
+	"strings"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -14,6 +15,7 @@ func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte,
 
 func convertOpenAIResponsesRequestToCodexLegacy(modelName string, inputRawJSON []byte) []byte {
 	rawJSON := inputRawJSON
+	rawJSON = normalizeOpenAIResponsesReasoningCompatibilityBytes(rawJSON)
 
 	inputResult := gjson.GetBytes(rawJSON, "input")
 	if inputResult.Type == gjson.String {
@@ -47,6 +49,27 @@ func convertOpenAIResponsesRequestToCodexLegacy(modelName string, inputRawJSON [
 	rawJSON = normalizeCodexBuiltinTools(rawJSON)
 
 	return rawJSON
+}
+
+func normalizeOpenAIResponsesReasoningCompatibilityBytes(rawJSON []byte) []byte {
+	effort := normalizeOpenAIResponsesReasoningCompatibilityValue(gjson.GetBytes(rawJSON, "reasoning_effort"))
+	if effort == "" {
+		return rawJSON
+	}
+
+	result := rawJSON
+	if normalizeOpenAIResponsesReasoningCompatibilityValue(gjson.GetBytes(result, "reasoning.effort")) == "" {
+		result, _ = sjson.SetBytes(result, "reasoning.effort", effort)
+	}
+	result, _ = sjson.DeleteBytes(result, "reasoning_effort")
+	return result
+}
+
+func normalizeOpenAIResponsesReasoningCompatibilityValue(result gjson.Result) string {
+	if !result.Exists() || result.Type != gjson.String {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(result.String()))
 }
 
 // applyResponsesCompactionCompatibility handles OpenAI Responses context_management.compaction

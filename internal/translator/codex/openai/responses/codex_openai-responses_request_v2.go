@@ -3,6 +3,7 @@ package responses
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 
 	"github.com/bytedance/sonic"
 )
@@ -18,6 +19,7 @@ func convertOpenAIResponsesRequestToCodexV2(modelName string, inputRawJSON []byt
 	if err := sonic.Unmarshal(inputRawJSON, &payload); err != nil {
 		return convertOpenAIResponsesRequestToCodexLegacy(modelName, inputRawJSON)
 	}
+	normalizeOpenAIResponsesReasoningCompatibilityPayload(payload)
 
 	if inputText, ok := payload["input"].(string); ok {
 		payload["input"] = []any{
@@ -68,6 +70,43 @@ func convertOpenAIResponsesRequestToCodexV2(modelName string, inputRawJSON []byt
 		return convertOpenAIResponsesRequestToCodexLegacy(modelName, inputRawJSON)
 	}
 	return out
+}
+
+func normalizeOpenAIResponsesReasoningCompatibilityPayload(payload map[string]any) {
+	rawEffort, ok := payload["reasoning_effort"]
+	if !ok {
+		return
+	}
+
+	effort := strings.ToLower(strings.TrimSpace(responseCompatStringValue(rawEffort)))
+	delete(payload, "reasoning_effort")
+	if effort == "" {
+		return
+	}
+
+	reasoning, _ := payload["reasoning"].(map[string]any)
+	if reasoning == nil {
+		reasoning = map[string]any{}
+	}
+	if existing := strings.TrimSpace(responseCompatStringValue(reasoning["effort"])); existing == "" {
+		reasoning["effort"] = effort
+	}
+	payload["reasoning"] = reasoning
+}
+
+func responseCompatStringValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case json.RawMessage:
+		var text string
+		if err := sonic.Unmarshal(typed, &text); err == nil {
+			return text
+		}
+		return string(typed)
+	default:
+		return ""
+	}
 }
 
 func jsonEqualResponsesPayload(got, want []byte) bool {

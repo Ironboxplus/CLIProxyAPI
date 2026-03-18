@@ -250,6 +250,7 @@ func normalizeResponseCreateRequest(rawJSON []byte) ([]byte, []byte, *interfaces
 	if errDelete != nil {
 		normalized = bytes.Clone(rawJSON)
 	}
+	normalized = normalizeResponsesReasoningCompatibility(normalized)
 	normalized, _ = sjson.SetBytes(normalized, "stream", true)
 	if !gjson.GetBytes(normalized, "input").Exists() {
 		normalized, _ = sjson.SetRawBytes(normalized, "input", []byte("[]"))
@@ -310,6 +311,7 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 					normalized, _ = sjson.SetRawBytes(normalized, "instructions", []byte(instructions.Raw))
 				}
 			}
+			normalized = normalizeResponsesReasoningCompatibility(normalized)
 			normalized, _ = sjson.SetBytes(normalized, "stream", true)
 			return normalized, bytes.Clone(normalized), nil
 		}
@@ -361,6 +363,7 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 			normalized, _ = sjson.SetRawBytes(normalized, "instructions", []byte(instructions.Raw))
 		}
 	}
+	normalized = normalizeResponsesReasoningCompatibility(normalized)
 	normalized, _ = sjson.SetBytes(normalized, "stream", true)
 	return normalized, bytes.Clone(normalized), nil
 }

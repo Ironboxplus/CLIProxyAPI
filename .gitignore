@@ -45,12 +45,19 @@ GEMINI.md
 .agent/*
 .agents/*
 .opencode/*
+.omc/*
+.omx/*
 .idea/*
 .bmad/*
 _bmad/*
 _bmad-output/*
 .mcp/cache/
 scripts/*
+
+# Local debug artifacts
+/CLIProxyAPIPlus
+/cpa_*.json
+/cpa_*.txt
 # macOS
 .DS_Store
 ._*
