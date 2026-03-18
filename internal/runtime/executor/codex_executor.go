@@ -202,22 +202,23 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	defer reporter.TrackFailure(ctx, &err)
 
 	from := opts.SourceFormat
-	to := sdktranslator.FromString("openai-response")
+	requestFormat := sdktranslator.FromString("openai-response")
+	responseFormat := sdktranslator.FromString("openai-response")
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
-	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, false)
-	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
+	originalTranslated := sdktranslator.TranslateRequest(from, requestFormat, baseModel, originalPayload, false)
+	body := sdktranslator.TranslateRequest(from, requestFormat, baseModel, req.Payload, false)
 
-	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
+	body, err = thinking.ApplyThinking(body, req.Model, from.String(), requestFormat.String(), e.Identifier())
 	if err != nil {
 		return resp, err
 	}
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
-	body = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
+	body = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, requestFormat.String(), "", body, originalTranslated, requestedModel)
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	body, _ = sjson.DeleteBytes(body, "stream")
 	body = normalizeCodexCompactOpenAIResponseBody(body)
@@ -283,7 +284,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(data))
 	reporter.EnsurePublished(ctx)
 	var param any
-	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, originalPayload, body, data, &param)
+	out := sdktranslator.TranslateNonStream(ctx, responseFormat, from, req.Model, originalPayload, body, data, &param)
 	resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 	return resp, nil
 }
