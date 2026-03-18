@@ -151,9 +151,9 @@ func ApplyPayloadConfigWithRoot(cfg *config.Config, model, protocol, root string
 	return out
 }
 
-// hasPayloadRulesForModel reports whether any payload rule applies to the provided model/protocol.
-// This is a fast pre-check to skip applyPayloadConfigWithRoot when no rules can match.
-func hasPayloadRulesForModel(cfg *config.Config, model, protocol, requestedModel string) bool {
+// HasPayloadRulesForModel reports whether any payload rule applies to the provided model/protocol.
+// This is a fast pre-check to skip ApplyPayloadConfigWithRoot when no rules can match.
+func HasPayloadRulesForModel(cfg *config.Config, model, protocol, requestedModel string) bool {
 	if cfg == nil {
 		return false
 	}

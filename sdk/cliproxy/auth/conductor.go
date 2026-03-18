@@ -1878,7 +1878,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							if result.RetryAfter != nil {
 								next = now.Add(*result.RetryAfter)
 							} else {
-								cooldown, nextLevel := nextQuotaCooldown(backoffLevel, quotaCooldownDisabledForAuth(auth))
+								cooldown, nextLevel := nextQuotaCooldown(backoffLevel, auth)
 								if cooldown > 0 {
 									next = now.Add(cooldown)
 								}

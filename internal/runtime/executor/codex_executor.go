@@ -220,6 +220,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	body = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	body, _ = sjson.DeleteBytes(body, "stream")
+	body = normalizeCodexCompactOpenAIResponseBody(body)
 	body = normalizeCodexInstructions(body)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
@@ -261,6 +262,15 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		b, _ := io.ReadAll(httpResp.Body)
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
+		if shouldCodexCompactFallbackStatus(httpResp.StatusCode) {
+			helps.LogWithRequestID(ctx).Debugf("codex executor: /responses/compact returned status %d, falling back to /responses", httpResp.StatusCode)
+			fallbackResp, fallbackErr := e.executeCompactResponsesFallback(ctx, auth, req, from, originalPayload, body, apiKey, reporter)
+			if fallbackErr == nil {
+				return fallbackResp, nil
+			}
+			err = fallbackErr
+			return resp, err
+		}
 		err = newCodexStatusErr(httpResp.StatusCode, b)
 		return resp, err
 	}
@@ -274,6 +284,73 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	reporter.EnsurePublished(ctx)
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, originalPayload, body, data, &param)
+	resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
+	return resp, nil
+}
+
+func shouldCodexCompactFallbackStatus(status int) bool {
+	return status >= http.StatusInternalServerError
+}
+
+func (e *CodexExecutor) executeCompactResponsesFallback(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, from sdktranslator.Format, originalPayload, body []byte, apiKey string, reporter *helps.UsageReporter) (resp cliproxyexecutor.Response, err error) {
+	fallbackBody := append([]byte(nil), body...)
+	fallbackBody, _ = sjson.SetBytes(fallbackBody, "stream", false)
+
+	_, baseURL := codexCreds(auth)
+	if baseURL == "" {
+		baseURL = "https://chatgpt.com/backend-api/codex"
+	}
+	url := strings.TrimSuffix(baseURL, "/") + "/responses"
+	httpReq, err := e.cacheHelper(ctx, from, url, req, fallbackBody)
+	if err != nil {
+		return resp, err
+	}
+	applyCodexHeaders(httpReq, auth, apiKey, false, e.cfg)
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+		URL:       url,
+		Method:    http.MethodPost,
+		Headers:   httpReq.Header.Clone(),
+		Body:      fallbackBody,
+		Provider:  e.Identifier(),
+		AuthID:    authID,
+		AuthLabel: authLabel,
+		AuthType:  authType,
+		AuthValue: authValue,
+	})
+	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		return resp, err
+	}
+	defer func() {
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("codex executor: close fallback response body error: %v", errClose)
+		}
+	}()
+	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		b, _ := io.ReadAll(httpResp.Body)
+		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
+		return resp, newCodexStatusErr(httpResp.StatusCode, b)
+	}
+	data, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		return resp, err
+	}
+	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+	reporter.Publish(ctx, helps.ParseOpenAIUsage(data))
+	reporter.EnsurePublished(ctx)
+	to := sdktranslator.FromString("openai-response")
+	var param any
+	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, originalPayload, fallbackBody, data, &param)
 	resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 	return resp, nil
 }
@@ -698,6 +775,30 @@ func newCodexStatusErr(statusCode int, body []byte) statusErr {
 		err.retryAfter = retryAfter
 	}
 	return err
+}
+
+func normalizeCodexCompactOpenAIResponseBody(body []byte) []byte {
+	inputResult := gjson.GetBytes(body, "input")
+	if inputResult.Type == gjson.String {
+		input, _ := sjson.Set(`[{"type":"message","role":"user","content":[{"type":"input_text","text":""}]}]`, "0.content.0.text", inputResult.String())
+		body, _ = sjson.SetRawBytes(body, "input", []byte(input))
+	}
+	return convertCompactSystemRoleToDeveloper(body)
+}
+
+func convertCompactSystemRoleToDeveloper(body []byte) []byte {
+	inputResult := gjson.GetBytes(body, "input")
+	if !inputResult.IsArray() {
+		return body
+	}
+	result := body
+	for index := range inputResult.Array() {
+		rolePath := fmt.Sprintf("input.%d.role", index)
+		if gjson.GetBytes(result, rolePath).String() == "system" {
+			result, _ = sjson.SetBytes(result, rolePath, "developer")
+		}
+	}
+	return result
 }
 
 func normalizeCodexInstructions(body []byte) []byte {

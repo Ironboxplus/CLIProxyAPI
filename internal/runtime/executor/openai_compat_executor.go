@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -149,8 +150,8 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		b, _ := io.ReadAll(httpResp.Body)
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
-		if opts.Alt == "responses/compact" && httpResp.StatusCode == http.StatusNotFound {
-			helps.LogWithRequestID(ctx).Debug("openai compat executor: /responses/compact not supported upstream, falling back to /chat/completions")
+		if opts.Alt == "responses/compact" && shouldCompactFallbackStatus(httpResp.StatusCode) {
+			helps.LogWithRequestID(ctx).Debugf("openai compat executor: /responses/compact returned status %d, falling back to /chat/completions", httpResp.StatusCode)
 			fallbackResp, fallbackErr := e.executeCompactFallback(ctx, auth, req, opts, baseModel, from, reporter)
 			if fallbackErr == nil {
 				return fallbackResp, nil
@@ -175,6 +176,10 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, body, &param)
 	resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 	return resp, nil
+}
+
+func shouldCompactFallbackStatus(status int) bool {
+	return status == http.StatusNotFound || status >= http.StatusInternalServerError
 }
 
 func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
@@ -383,7 +388,7 @@ func (e *OpenAICompatExecutor) translateOpenAICompatPayload(req cliproxyexecutor
 	from := opts.SourceFormat
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, stream)
 	requestedModel := payloadRequestedModel(opts, req.Model)
-	if !hasPayloadRulesForModel(e.cfg, baseModel, to.String(), requestedModel) {
+	if !helps.HasPayloadRulesForModel(e.cfg, baseModel, to.String(), requestedModel) {
 		return translated
 	}
 	originalPayload := req.Payload
@@ -398,7 +403,7 @@ func (e *OpenAICompatExecutor) translateOpenAICompatPayload(req cliproxyexecutor
 	return translated
 }
 
-func (e *OpenAICompatExecutor) executeCompactFallback(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, baseModel string, from sdktranslator.Format, reporter *usageReporter) (cliproxyexecutor.Response, error) {
+func (e *OpenAICompatExecutor) executeCompactFallback(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, baseModel string, from sdktranslator.Format, reporter *helps.UsageReporter) (cliproxyexecutor.Response, error) {
 	baseURL, apiKey := e.resolveCredentials(auth)
 	if baseURL == "" {
 		return cliproxyexecutor.Response{}, statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
@@ -467,12 +472,12 @@ func (e *OpenAICompatExecutor) executeCompactFallback(ctx context.Context, auth 
 	}
 	appendAPIResponseChunk(ctx, e.cfg, body)
 	if reporter != nil {
-		reporter.publish(ctx, parseOpenAIUsage(body))
-		reporter.ensurePublished(ctx)
+		reporter.Publish(ctx, parseOpenAIUsage(body))
+		reporter.EnsurePublished(ctx)
 	}
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, body, &param)
-	return cliproxyexecutor.Response{Payload: []byte(out), Headers: httpResp.Header.Clone()}, nil
+	return cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}, nil
 }
 
 type statusErr struct {
