@@ -144,6 +144,8 @@ func ConvertClaudeRequestToAntigravityV2(modelName string, inputRawJSON []byte, 
 	}
 
 	// Process messages
+	// tool_use_id -> tool_name mapping (needed to resolve tool_result.functionResponse.name)
+	toolNameByID := make(map[string]string)
 	for _, msg := range req.Messages {
 		role := msg.Role
 		if role == "assistant" {
@@ -186,7 +188,7 @@ func ConvertClaudeRequestToAntigravityV2(modelName string, inputRawJSON []byte, 
 					}
 
 				case "tool_use":
-					part := processToolUseContentV2(ci, currentMessageThinkingSignature)
+					part := processToolUseContentV2(ci, currentMessageThinkingSignature, toolNameByID)
 					if part != nil {
 						if role == "model" {
 							otherParts = append(otherParts, *part)
@@ -196,7 +198,7 @@ func ConvertClaudeRequestToAntigravityV2(modelName string, inputRawJSON []byte, 
 					}
 
 				case "tool_result":
-					part := processToolResultContentV2(ci)
+					part := processToolResultContentV2(ci, toolNameByID)
 					if part != nil {
 						if role == "model" {
 							otherParts = append(otherParts, *part)
@@ -440,9 +442,12 @@ func processThinkingContentV2(ci ClaudeContentItem, modelName string, enableThou
 }
 
 // processToolUseContentV2 processes a tool_use content block without gjson
-func processToolUseContentV2(ci ClaudeContentItem, currentMessageThinkingSignature string) *Part {
+func processToolUseContentV2(ci ClaudeContentItem, currentMessageThinkingSignature string, toolNameByID map[string]string) *Part {
 	if len(ci.Input) == 0 {
 		return nil
+	}
+	if ci.ID != "" && ci.Name != "" {
+		toolNameByID[ci.ID] = ci.Name
 	}
 
 	// Validate that input is valid JSON object
@@ -481,15 +486,22 @@ func processToolUseContentV2(ci ClaudeContentItem, currentMessageThinkingSignatu
 }
 
 // processToolResultContentV2 processes a tool_result content block without gjson
-func processToolResultContentV2(ci ClaudeContentItem) *Part {
+func processToolResultContentV2(ci ClaudeContentItem, toolNameByID map[string]string) *Part {
 	if ci.ToolUseID == "" {
 		return nil
 	}
 
-	funcName := ci.ToolUseID
-	toolCallIDs := strings.Split(ci.ToolUseID, "-")
-	if len(toolCallIDs) > 1 {
-		funcName = strings.Join(toolCallIDs[0:len(toolCallIDs)-2], "-")
+	funcName := ""
+	if name, ok := toolNameByID[ci.ToolUseID]; ok && strings.TrimSpace(name) != "" {
+		funcName = name
+	} else {
+		toolCallIDs := strings.Split(ci.ToolUseID, "-")
+		if len(toolCallIDs) > 2 {
+			funcName = strings.Join(toolCallIDs[0:len(toolCallIDs)-2], "-")
+		}
+		if strings.TrimSpace(funcName) == "" {
+			funcName = ci.ToolUseID
+		}
 	}
 
 	response := map[string]interface{}{}
