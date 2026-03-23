@@ -243,7 +243,6 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 
 	// Convert Gemini thinkingConfig to Codex reasoning.effort.
 	// Note: Google official Python SDK sends snake_case fields (thinking_level/thinking_budget).
-	effortSet := false
 	if genConfig := root.Get("generationConfig"); genConfig.Exists() {
 		if thinkingConfig := genConfig.Get("thinkingConfig"); thinkingConfig.Exists() && thinkingConfig.IsObject() {
 			thinkingLevel := thinkingConfig.Get("thinkingLevel")
@@ -254,7 +253,6 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 				effort := strings.ToLower(strings.TrimSpace(thinkingLevel.String()))
 				if effort != "" {
 					out, _ = sjson.SetBytes(out, "reasoning.effort", effort)
-					effortSet = true
 				}
 			} else {
 				thinkingBudget := thinkingConfig.Get("thinkingBudget")
@@ -264,17 +262,14 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 				if thinkingBudget.Exists() {
 					if effort, ok := thinking.ConvertBudgetToLevel(int(thinkingBudget.Int())); ok {
 						out, _ = sjson.SetBytes(out, "reasoning.effort", effort)
-						effortSet = true
 					}
 				}
 			}
 		}
 	}
-	if !effortSet {
-		// No thinking config, set default effort
-		out, _ = sjson.SetBytes(out, "reasoning.effort", "medium")
+	if gjson.GetBytes(out, "reasoning.effort").Exists() {
+		out, _ = sjson.SetBytes(out, "reasoning.summary", "auto")
 	}
-	out, _ = sjson.SetBytes(out, "reasoning.summary", "auto")
 	out, _ = sjson.SetBytes(out, "stream", true)
 	out, _ = sjson.SetBytes(out, "store", false)
 	out, _ = sjson.SetBytes(out, "include", []string{"reasoning.encrypted_content"})

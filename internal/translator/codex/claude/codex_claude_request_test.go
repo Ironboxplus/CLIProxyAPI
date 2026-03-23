@@ -124,12 +124,41 @@ func TestConvertClaudeRequestToCodex_ParallelToolCalls(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ConvertClaudeRequestToCodex("test-model", []byte(tt.inputJSON), false)
+			result := ConvertClaudeRequestToCodex("gpt-5-codex", []byte(tt.inputJSON), false)
 			resultJSON := gjson.ParseBytes(result)
 
 			if got := resultJSON.Get("parallel_tool_calls").Bool(); got != tt.wantParallelToolCalls {
 				t.Fatalf("parallel_tool_calls = %v, want %v. Output: %s", got, tt.wantParallelToolCalls, string(result))
 			}
+			if got := resultJSON.Get("reasoning.effort"); got.Exists() {
+				t.Fatalf("reasoning.effort should be absent without explicit thinking, got %q. Output: %s", got.String(), string(result))
+			}
 		})
+	}
+}
+
+func TestConvertClaudeRequestToCodex_DoesNotInjectDefaultForXHighCapableModel(t *testing.T) {
+	inputJSON := `{
+		"model": "claude-3-opus",
+		"messages": [{"role": "user", "content": "hello"}]
+	}`
+
+	result := ConvertClaudeRequestToCodex("gpt-5.2-codex", []byte(inputJSON), false)
+	if got := gjson.GetBytes(result, "reasoning.effort"); got.Exists() {
+		t.Fatalf("reasoning.effort should be absent without explicit thinking, got %q. Output: %s", got.String(), string(result))
+	}
+}
+
+func TestConvertClaudeRequestToCodex_PrefersExplicitThinkingEffort(t *testing.T) {
+	inputJSON := `{
+		"model": "claude-3-opus",
+		"thinking": {"type": "adaptive"},
+		"output_config": {"effort": "high"},
+		"messages": [{"role": "user", "content": "hello"}]
+	}`
+
+	result := ConvertClaudeRequestToCodex("gpt-5.2-codex", []byte(inputJSON), false)
+	if got := gjson.GetBytes(result, "reasoning.effort").String(); got != "high" {
+		t.Fatalf("reasoning.effort = %q, want %q. Output: %s", got, "high", string(result))
 	}
 }

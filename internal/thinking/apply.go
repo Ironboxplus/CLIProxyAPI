@@ -158,11 +158,21 @@ func ApplyThinking(body []byte, model string, fromFormat string, toFormat string
 	}
 
 	if !hasThinkingConfig(config) {
-		log.WithFields(log.Fields{
-			"provider": providerFormat,
-			"model":    modelInfo.ID,
-		}).Debug("thinking: no config found, passthrough |")
-		return body, nil
+		if synthesized, ok := synthesizeDefaultCodexConfig(fromFormat, providerFormat, suffixResult, modelInfo); ok {
+			config = synthesized
+			log.WithFields(log.Fields{
+				"provider": providerFormat,
+				"model":    modelInfo.ID,
+				"mode":     config.Mode,
+				"level":    config.Level,
+			}).Debug("thinking: synthesized default codex config |")
+		} else {
+			log.WithFields(log.Fields{
+				"provider": providerFormat,
+				"model":    modelInfo.ID,
+			}).Debug("thinking: no config found, passthrough |")
+			return body, nil
+		}
 	}
 
 	// 5. Validate and normalize configuration
@@ -343,6 +353,25 @@ func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 
 func hasThinkingConfig(config ThinkingConfig) bool {
 	return config.Mode != ModeBudget || config.Budget != 0 || config.Level != ""
+}
+
+func synthesizeDefaultCodexConfig(fromFormat, toFormat string, suffixResult SuffixResult, modelInfo *registry.ModelInfo) (ThinkingConfig, bool) {
+	if toFormat != "codex" || fromFormat == "codex" || suffixResult.HasSuffix || modelInfo == nil || IsUserDefinedModel(modelInfo) || modelInfo.Thinking == nil {
+		return ThinkingConfig{}, false
+	}
+	if level, ok := highestSupportedCodexLevel(modelInfo.Thinking.Levels); ok {
+		return ThinkingConfig{Mode: ModeLevel, Level: level}, true
+	}
+	return ThinkingConfig{}, false
+}
+
+func highestSupportedCodexLevel(levels []string) (ThinkingLevel, bool) {
+	for _, level := range []ThinkingLevel{LevelXHigh, LevelHigh, LevelMedium, LevelLow, LevelMinimal, LevelNone} {
+		if HasLevel(levels, string(level)) {
+			return level, true
+		}
+	}
+	return "", false
 }
 
 // extractClaudeConfig extracts thinking configuration from Claude format request body.

@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"bytes"
 	"net/http"
 	"strings"
 	"testing"
@@ -285,25 +286,19 @@ func TestTranslateGitHubCopilotResponsesStreamToClaude_TextLifecycle(t *testing.
 	var param any
 
 	created := translateGitHubCopilotResponsesStreamToClaude([]byte(`data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5-codex"}}`), &param)
-	if len(created) == 0 || !strings.Contains(string(created[0]), "message_start") {
+	if len(created) == 0 || !bytes.Contains(created[0], []byte("message_start")) {
 		t.Fatalf("created events = %#v, want message_start", created)
 	}
 
 	delta := translateGitHubCopilotResponsesStreamToClaude([]byte(`data: {"type":"response.output_text.delta","delta":"he"}`), &param)
-	var joinedDelta string
-	for _, d := range delta {
-		joinedDelta += string(d)
-	}
-	if !strings.Contains(joinedDelta, "content_block_start") || !strings.Contains(joinedDelta, "text_delta") {
+	joinedDelta := bytes.Join(delta, nil)
+	if !bytes.Contains(joinedDelta, []byte("content_block_start")) || !bytes.Contains(joinedDelta, []byte("text_delta")) {
 		t.Fatalf("delta events = %#v, want content_block_start + text_delta", delta)
 	}
 
 	completed := translateGitHubCopilotResponsesStreamToClaude([]byte(`data: {"type":"response.completed","response":{"usage":{"input_tokens":7,"output_tokens":9}}}`), &param)
-	var joinedCompleted string
-	for _, c := range completed {
-		joinedCompleted += string(c)
-	}
-	if !strings.Contains(joinedCompleted, "message_delta") || !strings.Contains(joinedCompleted, "message_stop") {
+	joinedCompleted := bytes.Join(completed, nil)
+	if !bytes.Contains(joinedCompleted, []byte("message_delta")) || !bytes.Contains(joinedCompleted, []byte("message_stop")) {
 		t.Fatalf("completed events = %#v, want message_delta + message_stop", completed)
 	}
 }

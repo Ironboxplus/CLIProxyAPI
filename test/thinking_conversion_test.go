@@ -53,7 +53,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 	cases := []thinkingTestCase{
 		// level-model (Levels=minimal/low/medium/high, ZeroAllowed=false, DynamicAllowed=false)
 
-		// Case 1: No suffix → injected default → medium
+		// Case 1: No suffix → injected default → high
 		{
 			name:        "1",
 			from:        "openai",
@@ -61,7 +61,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			model:       "level-model",
 			inputJSON:   `{"model":"level-model","messages":[{"role":"user","content":"hi"}]}`,
 			expectField: "reasoning.effort",
-			expectValue: "medium",
+			expectValue: "high",
 			expectErr:   false,
 		},
 		// Case 2: Specified medium → medium
@@ -107,7 +107,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			expectValue: "medium",
 			expectErr:   false,
 		},
-		// Case 6: No suffix from gemini → injected default → medium
+		// Case 6: No suffix from gemini → injected default → high
 		{
 			name:        "6",
 			from:        "gemini",
@@ -115,7 +115,18 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			model:       "level-model",
 			inputJSON:   `{"model":"level-model","contents":[{"role":"user","parts":[{"text":"hi"}]}]}`,
 			expectField: "reasoning.effort",
-			expectValue: "medium",
+			expectValue: "high",
+			expectErr:   false,
+		},
+		// Case 6a: No suffix for known gpt-5.4 model → injected default xhigh
+		{
+			name:        "6a",
+			from:        "openai",
+			to:          "codex",
+			model:       "gpt-5.4",
+			inputJSON:   `{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}]}`,
+			expectField: "reasoning.effort",
+			expectValue: "xhigh",
 			expectErr:   false,
 		},
 		// Case 7: Budget 8192 → medium
@@ -850,15 +861,14 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			expectValue: "auto",
 			expectErr:   false,
 		},
-		// Case 71: Claude to Codex no suffix → injected default → medium
+		// Case 71: Claude to Codex no suffix on user-defined model → passthrough
 		{
 			name:        "71",
 			from:        "claude",
 			to:          "codex",
 			model:       "user-defined-model",
 			inputJSON:   `{"model":"user-defined-model","messages":[{"role":"user","content":"hi"}]}`,
-			expectField: "reasoning.effort",
-			expectValue: "medium",
+			expectField: "",
 			expectErr:   false,
 		},
 		// Case 72: Budget 8192 → passthrough logic → medium
@@ -1453,7 +1463,7 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 	cases := []thinkingTestCase{
 		// level-model (Levels=minimal/low/medium/high, ZeroAllowed=false, DynamicAllowed=false)
 
-		// Case 1: No param → injected default → medium
+		// Case 1: No param → injected default → high
 		{
 			name:        "1",
 			from:        "openai",
@@ -1461,7 +1471,7 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			model:       "level-model",
 			inputJSON:   `{"model":"level-model","messages":[{"role":"user","content":"hi"}]}`,
 			expectField: "reasoning.effort",
-			expectValue: "medium",
+			expectValue: "high",
 			expectErr:   false,
 		},
 		// Case 2: reasoning_effort=medium → medium
@@ -1507,7 +1517,7 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectValue: "medium",
 			expectErr:   false,
 		},
-		// Case 6: No param from gemini → injected default → medium
+		// Case 6: No param from gemini → injected default → high
 		{
 			name:        "6",
 			from:        "gemini",
@@ -1515,7 +1525,18 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			model:       "level-model",
 			inputJSON:   `{"model":"level-model","contents":[{"role":"user","parts":[{"text":"hi"}]}]}`,
 			expectField: "reasoning.effort",
-			expectValue: "medium",
+			expectValue: "high",
+			expectErr:   false,
+		},
+		// Case 6a: No param for known gpt-5.4 model → injected default xhigh
+		{
+			name:        "6a",
+			from:        "openai",
+			to:          "codex",
+			model:       "gpt-5.4",
+			inputJSON:   `{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}]}`,
+			expectField: "reasoning.effort",
+			expectValue: "xhigh",
 			expectErr:   false,
 		},
 		// Case 7: thinkingBudget=8192 → medium
@@ -2250,15 +2271,14 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectValue: "auto",
 			expectErr:   false,
 		},
-		// Case 71: Claude no param → injected default → medium
+		// Case 71: Claude no param on user-defined model → passthrough
 		{
 			name:        "71",
 			from:        "claude",
 			to:          "codex",
 			model:       "user-defined-model",
 			inputJSON:   `{"model":"user-defined-model","messages":[{"role":"user","content":"hi"}]}`,
-			expectField: "reasoning.effort",
-			expectValue: "medium",
+			expectField: "",
 			expectErr:   false,
 		},
 		// Case 72: thinking.budget_tokens=8192 → medium

@@ -633,3 +633,50 @@ func TestToolsDefinitionTranslated(t *testing.T) {
 		t.Errorf("tool 'search' not found in output tools: %s", gjson.Get(result, "tools").Raw)
 	}
 }
+
+func TestReasoningEffortDefaultsAndOverrides(t *testing.T) {
+	converters := []struct {
+		name string
+		fn   func(string, []byte, bool) []byte
+	}{
+		{name: "v2", fn: ConvertOpenAIRequestToCodexV2},
+		{name: "legacy", fn: convertOpenAIRequestToCodexLegacy},
+	}
+
+	testCases := []struct {
+		name       string
+		model      string
+		input      string
+		want       string
+		wantExists bool
+	}{
+		{
+			name:       "does_not_inject_default_when_reasoning_effort_absent",
+			model:      "gpt-5.2-codex",
+			input:      `{"model":"gpt-5.2-codex","messages":[{"role":"user","content":"Hi"}]}`,
+			wantExists: false,
+		},
+		{
+			name:       "explicit_reasoning_effort_wins",
+			model:      "gpt-5.2-codex",
+			input:      `{"model":"gpt-5.2-codex","reasoning_effort":"low","messages":[{"role":"user","content":"Hi"}]}`,
+			want:       "low",
+			wantExists: true,
+		},
+	}
+
+	for _, converter := range converters {
+		for _, tc := range testCases {
+			t.Run(converter.name+"/"+tc.name, func(t *testing.T) {
+				out := converter.fn(tc.model, []byte(tc.input), true)
+				got := gjson.GetBytes(out, "reasoning.effort")
+				if got.Exists() != tc.wantExists {
+					t.Fatalf("reasoning.effort exists = %v, want %v in %s", got.Exists(), tc.wantExists, string(out))
+				}
+				if tc.wantExists && got.String() != tc.want {
+					t.Fatalf("expected reasoning.effort %q, got %q in %s", tc.want, got.String(), string(out))
+				}
+			})
+		}
+	}
+}

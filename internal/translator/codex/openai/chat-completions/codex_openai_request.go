@@ -34,11 +34,9 @@ func convertOpenAIRequestToCodexLegacy(modelName string, inputRawJSON []byte, st
 
 	if v := gjson.GetBytes(rawJSON, "reasoning_effort"); v.Exists() {
 		out, _ = sjson.SetBytes(out, "reasoning.effort", v.Value())
-	} else {
-		out, _ = sjson.SetBytes(out, "reasoning.effort", "medium")
+		out, _ = sjson.SetBytes(out, "reasoning.summary", "auto")
 	}
 	out, _ = sjson.SetBytes(out, "parallel_tool_calls", true)
-	out, _ = sjson.SetBytes(out, "reasoning.summary", "auto")
 	out, _ = sjson.SetBytes(out, "include", []string{"reasoning.encrypted_content"})
 	out, _ = sjson.SetBytes(out, "model", modelName)
 

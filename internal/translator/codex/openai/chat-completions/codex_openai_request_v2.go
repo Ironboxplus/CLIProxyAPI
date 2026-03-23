@@ -78,21 +78,23 @@ type openAICodexTextConfig struct {
 	Verbosity json.RawMessage `json:"verbosity,omitempty"`
 }
 
+type codexReasoningV2 struct {
+	Effort  string `json:"effort,omitempty"`
+	Summary string `json:"summary,omitempty"`
+}
+
 type codexRequestV2 struct {
-	Instructions      string `json:"instructions"`
-	Stream            bool   `json:"stream"`
-	ParallelToolCalls bool   `json:"parallel_tool_calls"`
-	Reasoning         struct {
-		Effort  string `json:"effort"`
-		Summary string `json:"summary"`
-	} `json:"reasoning"`
-	Include    []string `json:"include"`
-	Model      string   `json:"model"`
-	Input      []any    `json:"input"`
-	Text       any      `json:"text,omitempty"`
-	Tools      []any    `json:"tools,omitempty"`
-	ToolChoice any      `json:"tool_choice,omitempty"`
-	Store      bool     `json:"store"`
+	Instructions      string            `json:"instructions"`
+	Stream            bool              `json:"stream"`
+	ParallelToolCalls bool              `json:"parallel_tool_calls"`
+	Reasoning         *codexReasoningV2 `json:"reasoning,omitempty"`
+	Include           []string          `json:"include"`
+	Model             string            `json:"model"`
+	Input             []any             `json:"input"`
+	Text              any               `json:"text,omitempty"`
+	Tools             []any             `json:"tools,omitempty"`
+	ToolChoice        any               `json:"tool_choice,omitempty"`
+	Store             bool              `json:"store"`
 }
 
 func convertOpenAIRequestToCodexV2(modelName string, inputRawJSON []byte, stream bool) []byte {
@@ -110,10 +112,11 @@ func convertOpenAIRequestToCodexV2(modelName string, inputRawJSON []byte, stream
 		Input:             make([]any, 0, len(req.Messages)),
 		Store:             false,
 	}
-	out.Reasoning.Effort = "medium"
-	out.Reasoning.Summary = "auto"
 	if effort := bytes.TrimSpace([]byte(req.ReasoningEffort)); len(effort) > 0 {
-		out.Reasoning.Effort = req.ReasoningEffort
+		out.Reasoning = &codexReasoningV2{
+			Effort:  req.ReasoningEffort,
+			Summary: "auto",
+		}
 	}
 
 	toolNameMap, err := buildOpenAICodexShortNameMap(req.Tools)

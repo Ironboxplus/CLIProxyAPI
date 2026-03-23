@@ -166,11 +166,14 @@ func TestGitLabExecutorExecuteUsesOpenAIGateway(t *testing.T) {
 	var gotAuthHeader, gotRealmHeader string
 	var gotPath string
 	var gotModel string
+	var gotReasoningEffort string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotAuthHeader = r.Header.Get("Authorization")
 		gotRealmHeader = r.Header.Get("X-Gitlab-Realm")
-		gotModel = gjson.GetBytes(readBody(t, r), "model").String()
+		body := readBody(t, r)
+		gotModel = gjson.GetBytes(body, "model").String()
+		gotReasoningEffort = gjson.GetBytes(body, "reasoning.effort").String()
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"created_at\":1710000000,\"model\":\"gpt-5-codex\"}}\n\n"))
 		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello from openai gateway\"}\n\n"))
@@ -211,6 +214,9 @@ func TestGitLabExecutorExecuteUsesOpenAIGateway(t *testing.T) {
 	}
 	if gotModel != "gpt-5-codex" {
 		t.Fatalf("model = %q, want gpt-5-codex", gotModel)
+	}
+	if gotReasoningEffort != "high" {
+		t.Fatalf("reasoning.effort = %q, want high", gotReasoningEffort)
 	}
 	if got := gjson.GetBytes(resp.Payload, "choices.0.message.content").String(); got != "hello from openai gateway" {
 		t.Fatalf("expected openai gateway response, got %q payload=%s", got, string(resp.Payload))

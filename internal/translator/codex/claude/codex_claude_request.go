@@ -280,8 +280,8 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 	// Add additional configuration parameters for the Codex API.
 	template, _ = sjson.SetBytes(template, "parallel_tool_calls", parallelToolCalls)
 
-	// Convert thinking.budget_tokens to reasoning.effort.
-	reasoningEffort := "medium"
+	// Convert explicit Claude thinking settings to reasoning.effort.
+	reasoningEffort := ""
 	if thinkingConfig := rootResult.Get("thinking"); thinkingConfig.Exists() && thinkingConfig.IsObject() {
 		switch thinkingConfig.Get("type").String() {
 		case "enabled":
@@ -300,8 +300,6 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 			}
 			if effort != "" {
 				reasoningEffort = effort
-			} else {
-				reasoningEffort = string(thinking.LevelXHigh)
 			}
 		case "disabled":
 			if effort, ok := thinking.ConvertBudgetToLevel(0); ok && effort != "" {
@@ -309,8 +307,10 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 			}
 		}
 	}
-	template, _ = sjson.SetBytes(template, "reasoning.effort", reasoningEffort)
-	template, _ = sjson.SetBytes(template, "reasoning.summary", "auto")
+	if reasoningEffort != "" {
+		template, _ = sjson.SetBytes(template, "reasoning.effort", reasoningEffort)
+		template, _ = sjson.SetBytes(template, "reasoning.summary", "auto")
+	}
 	template, _ = sjson.SetBytes(template, "stream", true)
 	template, _ = sjson.SetBytes(template, "store", false)
 	template, _ = sjson.SetBytes(template, "include", []string{"reasoning.encrypted_content"})
