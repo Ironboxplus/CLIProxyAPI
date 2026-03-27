@@ -69,7 +69,7 @@ func convertOpenAIResponsesRequestToCodexV2(modelName string, inputRawJSON []byt
 	if err != nil {
 		return convertOpenAIResponsesRequestToCodexLegacy(modelName, inputRawJSON)
 	}
-	return out
+	return normalizeCodexBuiltinTools(out)
 }
 
 func normalizeOpenAIResponsesReasoningCompatibilityPayload(payload map[string]any) {
