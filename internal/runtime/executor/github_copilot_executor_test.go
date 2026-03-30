@@ -87,7 +87,6 @@ func TestUseGitHubCopilotResponsesEndpoint_RegistryResponsesOnlyModel(t *testing
 
 func TestUseGitHubCopilotResponsesEndpoint_DynamicRegistryWinsOverStatic(t *testing.T) {
 	// Not parallel: mutates global model registry, conflicts with RegistryResponsesOnlyModel.
-
 	reg := registry.GetGlobalRegistry()
 	clientID := "github-copilot-test-client"
 	reg.RegisterClient(clientID, "github-copilot", []*registry.ModelInfo{

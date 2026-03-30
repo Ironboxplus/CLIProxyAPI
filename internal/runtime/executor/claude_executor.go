@@ -848,11 +848,14 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 			hasClaude1MHeader = true
 		}
 	}
-	// Also check auth attributes — GitLab Duo sets gitlab_duo_force_context_1m
-	// when routing through the Anthropic gateway, but the gin headers won't have
-	// X-CPA-CLAUDE-1M because the request is internally constructed.
 	if !hasClaude1MHeader && auth != nil && auth.Attributes != nil {
-		if auth.Attributes["gitlab_duo_force_context_1m"] == "true" {
+		if v := strings.TrimSpace(auth.Attributes["header:X-CPA-CLAUDE-1M"]); v != "" && !strings.EqualFold(v, "false") {
+			hasClaude1MHeader = true
+		}
+		// Also check auth attributes — GitLab Duo sets gitlab_duo_force_context_1m
+		// when routing through the Anthropic gateway, but the gin headers won't have
+		// X-CPA-CLAUDE-1M because the request is internally constructed.
+		if v := strings.TrimSpace(auth.Attributes["gitlab_duo_force_context_1m"]); v != "" && !strings.EqualFold(v, "false") {
 			hasClaude1MHeader = true
 		}
 	}

@@ -17,7 +17,7 @@ import (
 // ConvertOpenAIRequestToCodex converts an OpenAI Chat Completions request JSON
 // into an OpenAI Responses API request JSON.
 func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream bool) []byte {
-	return convertOpenAIRequestToCodexLegacy(modelName, inputRawJSON, stream)
+	return convertOpenAIRequestToCodexV2(modelName, inputRawJSON, stream)
 }
 
 // ConvertOpenAIRequestToCodexV2 exposes the optimized translator for tests and benchmarks.
