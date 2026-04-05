@@ -93,8 +93,6 @@ func createReverseProxy(upstreamURL string, secretSource SecretSource, sdkConfig
 		req.Header.Del("Authorization")
 		req.Header.Del("X-Api-Key")
 		req.Header.Del("X-Goog-Api-Key")
-		misc.ScrubProxyAndFingerprintHeaders(req)
-
 		// Remove proxy, client identity, and browser fingerprint headers
 		misc.ScrubProxyAndFingerprintHeaders(req)
 
