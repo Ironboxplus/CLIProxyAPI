@@ -159,7 +159,8 @@ func ConvertClaudeRequestToAntigravityV2(modelName string, inputRawJSON []byte, 
 		if err := sonic.Unmarshal(msg.Content, &contentArray); err == nil {
 			var currentMessageThinkingSignature string
 			var thinkingParts []Part
-			var otherParts []Part
+			var regularParts []Part
+			var functionCallParts []Part
 
 			for _, ci := range contentArray {
 				switch ci.Type {
@@ -182,8 +183,8 @@ func ConvertClaudeRequestToAntigravityV2(modelName string, inputRawJSON []byte, 
 				case "text":
 					part := Part{Text: ci.Text}
 					if role == "model" {
-						otherParts = append(otherParts, part)
-					} else {
+						regularParts = append(regularParts, part)
+					 } else {
 						clientContent.Parts = append(clientContent.Parts, part)
 					}
 
@@ -191,7 +192,7 @@ func ConvertClaudeRequestToAntigravityV2(modelName string, inputRawJSON []byte, 
 					part := processToolUseContentV2(ci, currentMessageThinkingSignature, toolNameByID)
 					if part != nil {
 						if role == "model" {
-							otherParts = append(otherParts, *part)
+							functionCallParts = append(functionCallParts, *part)
 						} else {
 							clientContent.Parts = append(clientContent.Parts, *part)
 						}
@@ -201,7 +202,7 @@ func ConvertClaudeRequestToAntigravityV2(modelName string, inputRawJSON []byte, 
 					part := processToolResultContentV2(ci, toolNameByID)
 					if part != nil {
 						if role == "model" {
-							otherParts = append(otherParts, *part)
+							regularParts = append(regularParts, *part)
 						} else {
 							clientContent.Parts = append(clientContent.Parts, *part)
 						}
@@ -211,7 +212,7 @@ func ConvertClaudeRequestToAntigravityV2(modelName string, inputRawJSON []byte, 
 					part := processImageContentV2(ci)
 					if part != nil {
 						if role == "model" {
-							otherParts = append(otherParts, *part)
+							regularParts = append(regularParts, *part)
 						} else {
 							clientContent.Parts = append(clientContent.Parts, *part)
 						}
@@ -219,9 +220,14 @@ func ConvertClaudeRequestToAntigravityV2(modelName string, inputRawJSON []byte, 
 				}
 			}
 
-			// For model role, ensure thinking parts come first
+			// For model role, keep parity with legacy:
+			// 1) thinking parts first
+			// 2) regular parts (text, inlineData, functionResponse)
+			// 3) functionCall parts last
 			if role == "model" {
-				clientContent.Parts = append(thinkingParts, otherParts...)
+				clientContent.Parts = append(clientContent.Parts, thinkingParts...)
+				clientContent.Parts = append(clientContent.Parts, regularParts...)
+				clientContent.Parts = append(clientContent.Parts, functionCallParts...)
 			}
 
 			if len(clientContent.Parts) > 0 {
