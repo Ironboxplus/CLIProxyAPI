@@ -64,7 +64,7 @@ func (r *UsageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 		return
 	}
 	if detail.TotalTokens == 0 {
-		total := detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
+		total := detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens + detail.CachedTokens
 		if total > 0 {
 			detail.TotalTokens = total
 		}
@@ -294,7 +294,7 @@ func ParseClaudeUsage(data []byte) usage.Detail {
 		// fall back to creation tokens when read tokens are absent
 		detail.CachedTokens = usageNode.Get("cache_creation_input_tokens").Int()
 	}
-	detail.TotalTokens = detail.InputTokens + detail.OutputTokens
+	detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.CachedTokens
 	return detail
 }
 
@@ -315,7 +315,7 @@ func ParseClaudeStreamUsage(line []byte) (usage.Detail, bool) {
 	if detail.CachedTokens == 0 {
 		detail.CachedTokens = usageNode.Get("cache_creation_input_tokens").Int()
 	}
-	detail.TotalTokens = detail.InputTokens + detail.OutputTokens
+	detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.CachedTokens
 	return detail, true
 }
 
@@ -328,7 +328,7 @@ func parseGeminiFamilyUsageDetail(node gjson.Result) usage.Detail {
 		CachedTokens:    node.Get("cachedContentTokenCount").Int(),
 	}
 	if detail.TotalTokens == 0 {
-		detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
+		detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens + detail.CachedTokens
 	}
 	return detail
 }

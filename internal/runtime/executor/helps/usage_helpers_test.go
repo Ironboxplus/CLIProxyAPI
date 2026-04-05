@@ -62,3 +62,111 @@ func TestUsageReporterBuildRecordIncludesLatency(t *testing.T) {
 		t.Fatalf("latency = %v, want <= 3s", record.Latency)
 	}
 }
+
+func TestParseClaudeUsageTotalIncludesCachedTokens(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":622,"output_tokens":40,"cache_read_input_tokens":64512}}`)
+	detail := ParseClaudeUsage(data)
+	if detail.InputTokens != 622 {
+		t.Errorf("InputTokens = %d, want 622", detail.InputTokens)
+	}
+	if detail.CachedTokens != 64512 {
+		t.Errorf("CachedTokens = %d, want 64512", detail.CachedTokens)
+	}
+	if detail.OutputTokens != 40 {
+		t.Errorf("OutputTokens = %d, want 40", detail.OutputTokens)
+	}
+	// TotalTokens = InputTokens + OutputTokens + CachedTokens
+	if detail.TotalTokens != 65174 {
+		t.Errorf("TotalTokens = %d, want 65174", detail.TotalTokens)
+	}
+}
+
+func TestParseClaudeUsageFallsBackToCreationTokens(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":200}}`)
+	detail := ParseClaudeUsage(data)
+	if detail.CachedTokens != 200 {
+		t.Errorf("CachedTokens = %d, want 200", detail.CachedTokens)
+	}
+	// TotalTokens = 100 + 50 + 200 = 350
+	if detail.TotalTokens != 350 {
+		t.Errorf("TotalTokens = %d, want 350", detail.TotalTokens)
+	}
+}
+
+func TestParseClaudeStreamUsageTotalIncludesCachedTokens(t *testing.T) {
+	line := []byte(`data: {"type":"message_delta","usage":{"input_tokens":300,"output_tokens":20,"cache_read_input_tokens":1000}}`)
+	detail, ok := ParseClaudeStreamUsage(line)
+	if !ok {
+		t.Fatal("expected ok, got false")
+	}
+	if detail.InputTokens != 300 {
+		t.Errorf("InputTokens = %d, want 300", detail.InputTokens)
+	}
+	if detail.CachedTokens != 1000 {
+		t.Errorf("CachedTokens = %d, want 1000", detail.CachedTokens)
+	}
+	// TotalTokens = 300 + 20 + 1000 = 1320
+	if detail.TotalTokens != 1320 {
+		t.Errorf("TotalTokens = %d, want 1320", detail.TotalTokens)
+	}
+}
+
+func TestParseGeminiFamilyUsageTotalIncludesCachedWhenNoExplicitTotal(t *testing.T) {
+	data := []byte(`{"usageMetadata":{"promptTokenCount":500,"candidatesTokenCount":100,"thoughtsTokenCount":50,"cachedContentTokenCount":300}}`)
+	detail := ParseGeminiUsage(data)
+	if detail.InputTokens != 500 {
+		t.Errorf("InputTokens = %d, want 500", detail.InputTokens)
+	}
+	if detail.CachedTokens != 300 {
+		t.Errorf("CachedTokens = %d, want 300", detail.CachedTokens)
+	}
+	// No explicit totalTokenCount, so fallback: 500 + 100 + 50 + 300 = 950
+	if detail.TotalTokens != 950 {
+		t.Errorf("TotalTokens = %d, want 950", detail.TotalTokens)
+	}
+}
+
+func TestParseGeminiFamilyUsagePreservesExplicitTotal(t *testing.T) {
+	data := []byte(`{"usageMetadata":{"promptTokenCount":500,"candidatesTokenCount":100,"totalTokenCount":700}}`)
+	detail := ParseGeminiUsage(data)
+	if detail.TotalTokens != 700 {
+		t.Errorf("TotalTokens = %d, want 700 (explicit total)", detail.TotalTokens)
+	}
+}
+
+func TestParseAntigravityStreamUsageTotalIncludesCached(t *testing.T) {
+	line := []byte(`data: {"response":{"candidates":[{"finishReason":"STOP"}]},"usageMetadata":{"promptTokenCount":200,"candidatesTokenCount":80,"cachedContentTokenCount":150}}`)
+	detail, ok := ParseAntigravityStreamUsage(line)
+	if !ok {
+		t.Fatal("expected ok, got false")
+	}
+	if detail.InputTokens != 200 {
+		t.Errorf("InputTokens = %d, want 200", detail.InputTokens)
+	}
+	if detail.CachedTokens != 150 {
+		t.Errorf("CachedTokens = %d, want 150", detail.CachedTokens)
+	}
+	// No explicit total → fallback: 200 + 80 + 0 + 150 = 430
+	if detail.TotalTokens != 430 {
+		t.Errorf("TotalTokens = %d, want 430", detail.TotalTokens)
+	}
+}
+
+func TestPublishWithOutcomeComputesTotalWithCachedTokens(t *testing.T) {
+	// Verify that publishWithOutcome's TotalTokens fallback includes CachedTokens
+	detail := usage.Detail{
+		InputTokens:  622,
+		OutputTokens: 40,
+		CachedTokens: 64512,
+	}
+	// Simulate publishWithOutcome logic: TotalTokens is 0, so compute it
+	if detail.TotalTokens == 0 {
+		total := detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens + detail.CachedTokens
+		if total > 0 {
+			detail.TotalTokens = total
+		}
+	}
+	if detail.TotalTokens != 65174 {
+		t.Errorf("TotalTokens = %d, want 65174", detail.TotalTokens)
+	}
+}

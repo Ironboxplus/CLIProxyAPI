@@ -443,27 +443,22 @@ const httpStatusBadRequest = 400
 
 func normaliseDetail(detail coreusage.Detail) TokenStats {
 	tokens := TokenStats{
-		InputTokens:     detail.InputTokens,
+		InputTokens:     detail.InputTokens + detail.CachedTokens,
 		OutputTokens:    detail.OutputTokens,
 		ReasoningTokens: detail.ReasoningTokens,
 		CachedTokens:    detail.CachedTokens,
 		TotalTokens:     detail.TotalTokens,
 	}
 	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
-	}
-	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens + detail.CachedTokens
+		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens
 	}
 	return tokens
 }
 
 func normaliseTokenStats(tokens TokenStats) TokenStats {
+	tokens.InputTokens = tokens.InputTokens + tokens.CachedTokens
 	if tokens.TotalTokens == 0 {
 		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens
-	}
-	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens + tokens.CachedTokens
 	}
 	return tokens
 }
