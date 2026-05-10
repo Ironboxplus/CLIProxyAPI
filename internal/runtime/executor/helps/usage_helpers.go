@@ -392,6 +392,9 @@ func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
 	if detail.CachedTokens == 0 {
 		detail.CachedTokens = detail.CacheCreationTokens
 	}
+	if detail.CachedTokens > 0 && detail.InputTokens < detail.CachedTokens {
+		detail.InputTokens += detail.CachedTokens
+	}
 	detail.TotalTokens = detail.InputTokens + detail.OutputTokens
 	return detail
 }

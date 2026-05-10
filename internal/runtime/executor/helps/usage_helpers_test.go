@@ -130,6 +130,56 @@ func TestParseGeminiCLIStreamUsage_IgnoresTrafficTypeOnlyUsageMetadata(t *testin
 	}
 }
 
+func TestParseClaudeUsage_IncludesCachedInInput(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":3,"output_tokens":108,"cache_read_input_tokens":167500}}`)
+	detail := ParseClaudeUsage(data)
+	if detail.CachedTokens != 167500 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 167500)
+	}
+	if detail.InputTokens != 167503 {
+		t.Fatalf("input tokens = %d, want %d (3 + 167500 cached)", detail.InputTokens, 167503)
+	}
+	if detail.TotalTokens != 167611 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 167611)
+	}
+}
+
+func TestParseClaudeUsage_NoCacheNoChange(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":500,"output_tokens":100}}`)
+	detail := ParseClaudeUsage(data)
+	if detail.InputTokens != 500 {
+		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 500)
+	}
+	if detail.TotalTokens != 600 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 600)
+	}
+}
+
+func TestParseClaudeUsage_InputAlreadyIncludesCache(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":10000,"output_tokens":200,"cache_read_input_tokens":5000}}`)
+	detail := ParseClaudeUsage(data)
+	if detail.InputTokens != 10000 {
+		t.Fatalf("input tokens = %d, want %d (already >= cached, no adjustment)", detail.InputTokens, 10000)
+	}
+}
+
+func TestParseClaudeStreamUsage_IncludesCachedInInput(t *testing.T) {
+	line := []byte(`data: {"type":"message_delta","usage":{"input_tokens":5,"output_tokens":50,"cache_read_input_tokens":80000}}`)
+	detail, ok := ParseClaudeStreamUsage(line)
+	if !ok {
+		t.Fatal("ParseClaudeStreamUsage() ok = false, want true")
+	}
+	if detail.CachedTokens != 80000 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 80000)
+	}
+	if detail.InputTokens != 80005 {
+		t.Fatalf("input tokens = %d, want %d (5 + 80000 cached)", detail.InputTokens, 80005)
+	}
+	if detail.TotalTokens != 80055 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 80055)
+	}
+}
+
 func TestUsageReporterBuildRecordIncludesLatency(t *testing.T) {
 	reporter := &UsageReporter{
 		provider:    "openai",

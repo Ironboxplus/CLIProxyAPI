@@ -305,6 +305,8 @@ func (l *FileRequestLogger) logRequest(url, method string, requestHeaders map[st
 		return nil
 	}
 
+	writeErrorLog := force && statusCode >= 400
+
 	if l.homeEnabled && l.enabled {
 		responseToWrite, decompressErr := l.decompressResponse(responseHeaders, response)
 		if decompressErr != nil {
@@ -334,7 +336,12 @@ func (l *FileRequestLogger) logRequest(url, method string, requestHeaders map[st
 		if writeErr != nil {
 			return fmt.Errorf("failed to build request log content: %w", writeErr)
 		}
-		return l.forwardRequestLogToHome(context.Background(), requestHeaders, buf.String())
+		if errFwd := l.forwardRequestLogToHome(context.Background(), requestHeaders, buf.String()); errFwd != nil {
+			return errFwd
+		}
+		if !writeErrorLog {
+			return nil
+		}
 	}
 
 	// Ensure logs directory exists
@@ -342,12 +349,10 @@ func (l *FileRequestLogger) logRequest(url, method string, requestHeaders map[st
 		return fmt.Errorf("failed to create logs directory: %w", errEnsure)
 	}
 
-	// Generate filename with request ID
-	filename := l.generateFilename(url, requestID)
-	if force && !l.enabled {
-		filename = l.generateErrorFilename(url, requestID)
+	responseToWrite, decompressErr := l.decompressResponse(responseHeaders, response)
+	if decompressErr != nil {
+		responseToWrite = response
 	}
-	filePath := filepath.Join(l.logsDir, filename)
 
 	requestBodyPath, errTemp := l.writeRequestBodyTempFile(body)
 	if errTemp != nil {
@@ -361,47 +366,53 @@ func (l *FileRequestLogger) logRequest(url, method string, requestHeaders map[st
 		}()
 	}
 
-	responseToWrite, decompressErr := l.decompressResponse(responseHeaders, response)
-	if decompressErr != nil {
-		// If decompression fails, continue with original response and annotate the log output.
-		responseToWrite = response
+	writeLog := func(filePath string) error {
+		logFile, errOpen := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		if errOpen != nil {
+			return fmt.Errorf("failed to create log file: %w", errOpen)
+		}
+		writeErr := l.writeNonStreamingLog(
+			logFile,
+			url,
+			method,
+			requestHeaders,
+			body,
+			requestBodyPath,
+			websocketTimeline,
+			apiRequest,
+			apiResponse,
+			apiWebsocketTimeline,
+			apiResponseErrors,
+			statusCode,
+			responseHeaders,
+			responseToWrite,
+			decompressErr,
+			requestTimestamp,
+			apiResponseTimestamp,
+		)
+		if errClose := logFile.Close(); errClose != nil {
+			log.WithError(errClose).Warn("failed to close request log file")
+			if writeErr == nil {
+				return errClose
+			}
+		}
+		return writeErr
 	}
 
-	logFile, errOpen := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if errOpen != nil {
-		return fmt.Errorf("failed to create log file: %w", errOpen)
-	}
-
-	writeErr := l.writeNonStreamingLog(
-		logFile,
-		url,
-		method,
-		requestHeaders,
-		body,
-		requestBodyPath,
-		websocketTimeline,
-		apiRequest,
-		apiResponse,
-		apiWebsocketTimeline,
-		apiResponseErrors,
-		statusCode,
-		responseHeaders,
-		responseToWrite,
-		decompressErr,
-		requestTimestamp,
-		apiResponseTimestamp,
-	)
-	if errClose := logFile.Close(); errClose != nil {
-		log.WithError(errClose).Warn("failed to close request log file")
-		if writeErr == nil {
-			return errClose
+	// Write the regular request log when enabled
+	if l.enabled {
+		filename := l.generateFilename(url, requestID)
+		if writeErr := writeLog(filepath.Join(l.logsDir, filename)); writeErr != nil {
+			return fmt.Errorf("failed to write log file: %w", writeErr)
 		}
 	}
-	if writeErr != nil {
-		return fmt.Errorf("failed to write log file: %w", writeErr)
-	}
 
-	if force && !l.enabled {
+	// Always write error log for error responses
+	if writeErrorLog {
+		errorFilename := l.generateErrorFilename(url, requestID)
+		if writeErr := writeLog(filepath.Join(l.logsDir, errorFilename)); writeErr != nil {
+			return fmt.Errorf("failed to write error log file: %w", writeErr)
+		}
 		if errCleanup := l.cleanupOldErrorLogs(); errCleanup != nil {
 			log.WithError(errCleanup).Warn("failed to clean up old error logs")
 		}
