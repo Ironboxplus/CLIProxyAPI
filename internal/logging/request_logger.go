@@ -305,7 +305,7 @@ func (l *FileRequestLogger) logRequest(url, method string, requestHeaders map[st
 		return nil
 	}
 
-	writeErrorLog := force && statusCode >= 400
+	writeErrorLog := statusCode >= 400
 
 	if l.homeEnabled && l.enabled {
 		responseToWrite, decompressErr := l.decompressResponse(responseHeaders, response)
