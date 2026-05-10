@@ -145,7 +145,9 @@ func (h *Handler) DeleteLogs(c *gin.Context) {
 	})
 }
 
-// GetRequestErrorLogs lists error request log files.
+// GetRequestErrorLogs lists request log files.
+// When request-log is enabled, all request log files are returned.
+// When request-log is disabled, only error-*.log files are returned.
 func (h *Handler) GetRequestErrorLogs(c *gin.Context) {
 	if h == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "handler unavailable"})
@@ -168,23 +170,31 @@ func (h *Handler) GetRequestErrorLogs(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"files": []any{}})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list request error logs: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list request logs: %v", err)})
 		return
 	}
 
-	type errorLog struct {
+	showAll := h.cfg.RequestLog
+
+	type requestLog struct {
 		Name     string `json:"name"`
 		Size     int64  `json:"size"`
 		Modified int64  `json:"modified"`
 	}
 
-	files := make([]errorLog, 0, len(entries))
+	files := make([]requestLog, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
 		name := entry.Name()
-		if !strings.HasPrefix(name, "error-") || !strings.HasSuffix(name, ".log") {
+		if !strings.HasSuffix(name, ".log") {
+			continue
+		}
+		if name == defaultLogFileName || isRotatedLogFile(name) {
+			continue
+		}
+		if !showAll && !strings.HasPrefix(name, "error-") {
 			continue
 		}
 		info, errInfo := entry.Info()
@@ -192,7 +202,7 @@ func (h *Handler) GetRequestErrorLogs(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to read log info for %s: %v", name, errInfo)})
 			return
 		}
-		files = append(files, errorLog{
+		files = append(files, requestLog{
 			Name:     name,
 			Size:     info.Size(),
 			Modified: info.ModTime().Unix(),
