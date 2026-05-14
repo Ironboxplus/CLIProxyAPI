@@ -163,6 +163,58 @@ func TestParseClaudeUsage_InputAlreadyIncludesCache(t *testing.T) {
 	}
 }
 
+func TestParseClaudeUsage_IncludesCacheCreationInInput(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":50,"output_tokens":30,"cache_creation_input_tokens":500}}`)
+	detail := ParseClaudeUsage(data)
+	if detail.CacheCreationTokens != 500 {
+		t.Fatalf("cache_creation tokens = %d, want %d", detail.CacheCreationTokens, 500)
+	}
+	if detail.CachedTokens != 500 {
+		t.Fatalf("cached tokens = %d, want %d (cache_creation when no cache_read)", detail.CachedTokens, 500)
+	}
+	if detail.InputTokens != 550 {
+		t.Fatalf("input tokens = %d, want %d (50 + 500 cache_creation)", detail.InputTokens, 550)
+	}
+	if detail.TotalTokens != 580 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 580)
+	}
+}
+
+func TestParseClaudeUsage_IncludesBothCacheTypes(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":1000,"cache_creation_input_tokens":200}}`)
+	detail := ParseClaudeUsage(data)
+	if detail.CacheReadTokens != 1000 {
+		t.Fatalf("cache_read tokens = %d, want %d", detail.CacheReadTokens, 1000)
+	}
+	if detail.CacheCreationTokens != 200 {
+		t.Fatalf("cache_creation tokens = %d, want %d", detail.CacheCreationTokens, 200)
+	}
+	if detail.CachedTokens != 1200 {
+		t.Fatalf("cached tokens = %d, want %d (cache_read + cache_creation)", detail.CachedTokens, 1200)
+	}
+	if detail.InputTokens != 1300 {
+		t.Fatalf("input tokens = %d, want %d (100 + 1000 + 200)", detail.InputTokens, 1300)
+	}
+	if detail.TotalTokens != 1350 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 1350)
+	}
+}
+
+func TestParseClaudeUsage_InputAlreadyIncludesBothCacheTypes(t *testing.T) {
+	// When input_tokens >= sum of both cache fields, assume input already aggregates them.
+	data := []byte(`{"usage":{"input_tokens":10000,"output_tokens":200,"cache_read_input_tokens":3000,"cache_creation_input_tokens":2000}}`)
+	detail := ParseClaudeUsage(data)
+	if detail.InputTokens != 10000 {
+		t.Fatalf("input tokens = %d, want %d (already >= total cached, no adjustment)", detail.InputTokens, 10000)
+	}
+	if detail.CachedTokens != 5000 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 5000)
+	}
+	if detail.TotalTokens != 10200 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 10200)
+	}
+}
+
 func TestParseClaudeStreamUsage_IncludesCachedInInput(t *testing.T) {
 	line := []byte(`data: {"type":"message_delta","usage":{"input_tokens":5,"output_tokens":50,"cache_read_input_tokens":80000}}`)
 	detail, ok := ParseClaudeStreamUsage(line)

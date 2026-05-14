@@ -382,18 +382,19 @@ func ParseClaudeStreamUsage(line []byte) (usage.Detail, bool) {
 func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
 	cacheReadTokens := usageNode.Get("cache_read_input_tokens").Int()
 	cacheCreationTokens := usageNode.Get("cache_creation_input_tokens").Int()
+	totalCachedTokens := cacheReadTokens + cacheCreationTokens
 	detail := usage.Detail{
 		InputTokens:         usageNode.Get("input_tokens").Int(),
 		OutputTokens:        usageNode.Get("output_tokens").Int(),
-		CachedTokens:        cacheReadTokens,
+		CachedTokens:        totalCachedTokens,
 		CacheReadTokens:     cacheReadTokens,
 		CacheCreationTokens: cacheCreationTokens,
 	}
-	if detail.CachedTokens == 0 {
-		detail.CachedTokens = detail.CacheCreationTokens
-	}
-	if detail.CachedTokens > 0 && detail.InputTokens < detail.CachedTokens {
-		detail.InputTokens += detail.CachedTokens
+	// Anthropic returns input_tokens as the non-cached delta; reconstruct the full
+	// input by adding cached portions. If input_tokens already exceeds the cached
+	// total, assume the upstream pre-aggregated and leave it untouched.
+	if totalCachedTokens > 0 && detail.InputTokens < totalCachedTokens {
+		detail.InputTokens += totalCachedTokens
 	}
 	detail.TotalTokens = detail.InputTokens + detail.OutputTokens
 	return detail
