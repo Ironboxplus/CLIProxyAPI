@@ -2,6 +2,9 @@ package helps
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,6 +89,40 @@ func TestParseOpenAIStreamUsageResponsesFields(t *testing.T) {
 	}
 }
 
+func TestParseClaudeUsageIncludesCacheTokensInTotal(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":3085,"output_tokens":253,"cache_read_input_tokens":7,"cache_creation_input_tokens":19514}}`)
+	detail := ParseClaudeUsage(data)
+	if detail.InputTokens != 3085 {
+		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 3085)
+	}
+	if detail.OutputTokens != 253 {
+		t.Fatalf("output tokens = %d, want %d", detail.OutputTokens, 253)
+	}
+	if detail.CacheReadTokens != 7 {
+		t.Fatalf("cache read tokens = %d, want %d", detail.CacheReadTokens, 7)
+	}
+	if detail.CacheCreationTokens != 19514 {
+		t.Fatalf("cache creation tokens = %d, want %d", detail.CacheCreationTokens, 19514)
+	}
+	if detail.CachedTokens != 7 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 7)
+	}
+	if detail.TotalTokens != 22859 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 22859)
+	}
+}
+
+func TestParseClaudeUsageFallsBackCachedTokensToCacheCreation(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":3085,"output_tokens":253,"cache_creation_input_tokens":19514}}`)
+	detail := ParseClaudeUsage(data)
+	if detail.CachedTokens != 19514 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 19514)
+	}
+	if detail.TotalTokens != 22852 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 22852)
+	}
+}
+
 func TestParseGeminiCLIUsage_TopLevelUsageMetadata(t *testing.T) {
 	data := []byte(`{"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":7,"thoughtsTokenCount":3,"totalTokenCount":21,"cachedContentTokenCount":5}}`)
 	detail := ParseGeminiCLIUsage(data)
@@ -136,8 +173,8 @@ func TestParseClaudeUsage_IncludesCachedInInput(t *testing.T) {
 	if detail.CachedTokens != 167500 {
 		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 167500)
 	}
-	if detail.InputTokens != 167503 {
-		t.Fatalf("input tokens = %d, want %d (3 + 167500 cached)", detail.InputTokens, 167503)
+	if detail.InputTokens != 3 {
+		t.Fatalf("input tokens = %d, want %d (not inflated)", detail.InputTokens, 3)
 	}
 	if detail.TotalTokens != 167611 {
 		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 167611)
@@ -172,8 +209,8 @@ func TestParseClaudeUsage_IncludesCacheCreationInInput(t *testing.T) {
 	if detail.CachedTokens != 500 {
 		t.Fatalf("cached tokens = %d, want %d (cache_creation when no cache_read)", detail.CachedTokens, 500)
 	}
-	if detail.InputTokens != 550 {
-		t.Fatalf("input tokens = %d, want %d (50 + 500 cache_creation)", detail.InputTokens, 550)
+	if detail.InputTokens != 50 {
+		t.Fatalf("input tokens = %d, want %d (not inflated)", detail.InputTokens, 50)
 	}
 	if detail.TotalTokens != 580 {
 		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 580)
@@ -189,11 +226,11 @@ func TestParseClaudeUsage_IncludesBothCacheTypes(t *testing.T) {
 	if detail.CacheCreationTokens != 200 {
 		t.Fatalf("cache_creation tokens = %d, want %d", detail.CacheCreationTokens, 200)
 	}
-	if detail.CachedTokens != 1200 {
-		t.Fatalf("cached tokens = %d, want %d (cache_read + cache_creation)", detail.CachedTokens, 1200)
+	if detail.CachedTokens != 1000 {
+		t.Fatalf("cached tokens = %d, want %d (cache_read when both present)", detail.CachedTokens, 1000)
 	}
-	if detail.InputTokens != 1300 {
-		t.Fatalf("input tokens = %d, want %d (100 + 1000 + 200)", detail.InputTokens, 1300)
+	if detail.InputTokens != 100 {
+		t.Fatalf("input tokens = %d, want %d (not inflated)", detail.InputTokens, 100)
 	}
 	if detail.TotalTokens != 1350 {
 		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 1350)
@@ -201,17 +238,17 @@ func TestParseClaudeUsage_IncludesBothCacheTypes(t *testing.T) {
 }
 
 func TestParseClaudeUsage_InputAlreadyIncludesBothCacheTypes(t *testing.T) {
-	// When input_tokens >= sum of both cache fields, assume input already aggregates them.
+	// input_tokens is not inflated regardless; total = input + output + cacheRead + cacheCreation.
 	data := []byte(`{"usage":{"input_tokens":10000,"output_tokens":200,"cache_read_input_tokens":3000,"cache_creation_input_tokens":2000}}`)
 	detail := ParseClaudeUsage(data)
 	if detail.InputTokens != 10000 {
-		t.Fatalf("input tokens = %d, want %d (already >= total cached, no adjustment)", detail.InputTokens, 10000)
+		t.Fatalf("input tokens = %d, want %d (not inflated)", detail.InputTokens, 10000)
 	}
-	if detail.CachedTokens != 5000 {
-		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 5000)
+	if detail.CachedTokens != 3000 {
+		t.Fatalf("cached tokens = %d, want %d (cache_read when both present)", detail.CachedTokens, 3000)
 	}
-	if detail.TotalTokens != 10200 {
-		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 10200)
+	if detail.TotalTokens != 15200 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 15200)
 	}
 }
 
@@ -224,8 +261,8 @@ func TestParseClaudeStreamUsage_IncludesCachedInInput(t *testing.T) {
 	if detail.CachedTokens != 80000 {
 		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 80000)
 	}
-	if detail.InputTokens != 80005 {
-		t.Fatalf("input tokens = %d, want %d (5 + 80000 cached)", detail.InputTokens, 80005)
+	if detail.InputTokens != 5 {
+		t.Fatalf("input tokens = %d, want %d (not inflated)", detail.InputTokens, 5)
 	}
 	if detail.TotalTokens != 80055 {
 		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 80055)
@@ -245,6 +282,41 @@ func TestUsageReporterBuildRecordIncludesLatency(t *testing.T) {
 	}
 	if record.Latency > 3*time.Second {
 		t.Fatalf("latency = %v, want <= 3s", record.Latency)
+	}
+}
+
+func TestUsageReporterTrackHTTPClientStartsTTFTBeforeRoundTrip(t *testing.T) {
+	delay := 40 * time.Millisecond
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
+	client := reporter.TrackHTTPClient(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			time.Sleep(delay)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("ok")),
+				Request:    req,
+			}, nil
+		}),
+	})
+
+	req, errNewRequest := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.invalid/v1/chat/completions", strings.NewReader("{}"))
+	if errNewRequest != nil {
+		t.Fatalf("NewRequestWithContext() error = %v", errNewRequest)
+	}
+	resp, errDo := client.Do(req)
+	if errDo != nil {
+		t.Fatalf("Do() error = %v", errDo)
+	}
+	if _, errRead := io.ReadAll(resp.Body); errRead != nil {
+		t.Fatalf("ReadAll() error = %v", errRead)
+	}
+	if errClose := resp.Body.Close(); errClose != nil {
+		t.Fatalf("response body close error = %v", errClose)
+	}
+	if got := reporter.ttftDuration(); got < delay {
+		t.Fatalf("ttft = %v, want >= %v", got, delay)
 	}
 }
 
@@ -271,6 +343,39 @@ func TestUsageReporterBuildRecordIncludesReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestUsageReporterBuildRecordIncludesServiceTier(t *testing.T) {
+	ctx := usage.WithServiceTier(context.Background(), "priority")
+	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
+	if record.ServiceTier != "priority" {
+		t.Fatalf("service tier = %q, want %q", record.ServiceTier, "priority")
+	}
+}
+
+func TestUsageReporterSetTranslatedReasoningEffortUpdatesServiceTier(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
+
+	reporter.SetTranslatedReasoningEffort([]byte(`{"service_tier":"priority"}`), "openai")
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
+	if record.ServiceTier != "priority" {
+		t.Fatalf("service tier = %q, want %q", record.ServiceTier, "priority")
+	}
+}
+
+func TestUsageReporterSetTranslatedReasoningEffortDefaultsServiceTierWhenRemoved(t *testing.T) {
+	ctx := usage.WithServiceTier(context.Background(), "priority")
+	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
+
+	reporter.SetTranslatedReasoningEffort([]byte(`{"model":"gpt-5.4"}`), "openai")
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
+	if record.ServiceTier != usage.DefaultServiceTier {
+		t.Fatalf("service tier = %q, want %q", record.ServiceTier, usage.DefaultServiceTier)
+	}
+}
+
 func TestUsageReporterBuildAdditionalModelRecordSkipsZeroTokens(t *testing.T) {
 	reporter := &UsageReporter{
 		provider:    "codex",
@@ -287,4 +392,10 @@ func TestUsageReporterBuildAdditionalModelRecordSkipsZeroTokens(t *testing.T) {
 	if _, ok := reporter.buildAdditionalModelRecord("gpt-image-2", usage.Detail{CachedTokens: 2}); !ok {
 		t.Fatalf("expected non-zero cached token usage to be recorded")
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
