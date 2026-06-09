@@ -7,6 +7,7 @@ import (
 )
 
 const (
+	claudeBuiltinFableModelID       = "claude-fable-5"
 	codexBuiltinImageModelID        = "gpt-image-2"
 	xaiBuiltinImageModelID          = "grok-imagine-image"
 	xaiBuiltinImageQualityModelID   = "grok-imagine-image-quality"
@@ -32,7 +33,7 @@ type staticModelsJSON struct {
 
 // GetClaudeModels returns the standard Claude model definitions.
 func GetClaudeModels() []*ModelInfo {
-	return cloneModelInfos(getModels().Claude)
+	return WithClaudeBuiltins(cloneModelInfos(getModels().Claude))
 }
 
 // GetGeminiModels returns the standard Gemini model definitions.
@@ -90,6 +91,12 @@ func GetXAIModels() []*ModelInfo {
 	return WithXAIBuiltins(cloneModelInfos(getModels().XAI))
 }
 
+// WithClaudeBuiltins injects hard-coded Claude model definitions that should
+// not depend on remote models.json updates.
+func WithClaudeBuiltins(models []*ModelInfo) []*ModelInfo {
+	return upsertModelInfos(models, claudeBuiltinFableModelInfo())
+}
+
 // WithCodexBuiltins injects hard-coded Codex-only model definitions that should
 // not depend on remote models.json updates. Built-ins replace any matching IDs
 // already present in the provided slice.
@@ -101,6 +108,26 @@ func WithCodexBuiltins(models []*ModelInfo) []*ModelInfo {
 // not depend on remote models.json updates.
 func WithXAIBuiltins(models []*ModelInfo) []*ModelInfo {
 	return upsertModelInfos(models, xaiBuiltinImageModelInfo(), xaiBuiltinImageQualityModelInfo(), xaiBuiltinVideoModelInfo(), xaiBuiltinVideo15PreviewModelInfo())
+}
+
+func claudeBuiltinFableModelInfo() *ModelInfo {
+	return &ModelInfo{
+		ID:                  claudeBuiltinFableModelID,
+		Object:              "model",
+		Created:             1781193600,
+		OwnedBy:             "anthropic",
+		Type:                "claude",
+		DisplayName:         "Claude Fable 5",
+		Description:         "Latest Claude model with maximum intelligence and 1M context",
+		ContextLength:       1000000,
+		MaxCompletionTokens: 128000,
+		Thinking: &ThinkingSupport{
+			Min:         1024,
+			Max:         128000,
+			ZeroAllowed: true,
+			Levels:      []string{"low", "medium", "high", "xhigh", "max"},
+		},
+	}
 }
 
 func codexBuiltinImageModelInfo() *ModelInfo {

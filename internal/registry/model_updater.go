@@ -124,9 +124,10 @@ func tryRefreshModels(ctx context.Context, label string) {
 	// Detect changes before updating store.
 	changed := detectChangedProviders(oldData, parsed)
 
-	// Update store with new data regardless.
+	// Merge remote into current: remote models update/add, local-only models are preserved.
+	merged := mergeModelCatalog(oldData, parsed)
 	modelsCatalogStore.mu.Lock()
-	modelsCatalogStore.data = parsed
+	modelsCatalogStore.data = merged
 	modelsCatalogStore.mu.Unlock()
 
 	if len(changed) == 0 {
@@ -345,6 +346,52 @@ func validateModelsCatalog(data *staticModelsJSON) error {
 		}
 	}
 	return nil
+}
+
+// mergeModelCatalog merges remote into local: remote models update or add,
+// local-only models (not present in remote) are preserved. This way embedded
+// models survive remote refresh until the remote catalog includes them.
+func mergeModelCatalog(local, remote *staticModelsJSON) *staticModelsJSON {
+	if local == nil {
+		return remote
+	}
+	if remote == nil {
+		return local
+	}
+	return &staticModelsJSON{
+		Claude:      mergeModelSlice(local.Claude, remote.Claude),
+		Gemini:      mergeModelSlice(local.Gemini, remote.Gemini),
+		Vertex:      mergeModelSlice(local.Vertex, remote.Vertex),
+		GeminiCLI:   mergeModelSlice(local.GeminiCLI, remote.GeminiCLI),
+		AIStudio:    mergeModelSlice(local.AIStudio, remote.AIStudio),
+		CodexFree:   mergeModelSlice(local.CodexFree, remote.CodexFree),
+		CodexTeam:   mergeModelSlice(local.CodexTeam, remote.CodexTeam),
+		CodexPlus:   mergeModelSlice(local.CodexPlus, remote.CodexPlus),
+		CodexPro:    mergeModelSlice(local.CodexPro, remote.CodexPro),
+		Kimi:        mergeModelSlice(local.Kimi, remote.Kimi),
+		Antigravity: mergeModelSlice(local.Antigravity, remote.Antigravity),
+		XAI:         mergeModelSlice(local.XAI, remote.XAI),
+	}
+}
+
+func mergeModelSlice(local, remote []*ModelInfo) []*ModelInfo {
+	remoteIDs := make(map[string]struct{}, len(remote))
+	for _, m := range remote {
+		if m != nil {
+			remoteIDs[strings.ToLower(strings.TrimSpace(m.ID))] = struct{}{}
+		}
+	}
+	merged := make([]*ModelInfo, len(remote))
+	copy(merged, remote)
+	for _, m := range local {
+		if m == nil {
+			continue
+		}
+		if _, exists := remoteIDs[strings.ToLower(strings.TrimSpace(m.ID))]; !exists {
+			merged = append(merged, m)
+		}
+	}
+	return merged
 }
 
 func validateModelSection(section string, models []*ModelInfo) error {
