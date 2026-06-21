@@ -78,3 +78,30 @@
 ### 创建项目文档体系
 
 创建 `env.md`、`journal.md`、`plan.md`，更新 `CLAUDE.md` 作为项目索引。
+
+---
+
+## 2026-06-21
+
+### Merge 上游 172 个 commit（merge 而非 rebase）
+
+**背景**：`new` 落后 `upstream/main` 172 个 commit（merge-base `44ea9abc`，上游已 rebase 历史，故计数偏大）。本地真正的定制只有 7 个非 merge commit（Fable 5、Claude usage cache tokens、request log、CI workflow、项目文档）。
+
+**操作**：先建备份分支 `backup/new-pre-rebase-20260621-144654`，再 `git merge upstream/main`。
+
+**上游主要变更**：移除 gemini-cli provider 与 amp 集成（`feat!: remove amp`）、新增 pluginstore 子系统 / videos handlers / websockets executors、translator 大量重构（Gemini 视频 URL、tool/call ID、cache token 明细）、management 日志游标与基于快照的 reload。
+
+**冲突解决（原则：保留双方优化，冲突时取较好的 = 上游 canonical/重构版本）**：
+1. `model_definitions.go`：两侧各自新增常量/builtin 函数，全部保留（本地 `claudeBuiltinFableModelInfo` + 上游 `codexBuiltinImage15ModelInfo`、`normalizeAntigravityCapabilityModelID`）；Fable 5 builtin 元数据对齐到上游 `models.json` 的 canonical 值（created `1781049600`、官方 description）。
+2. `models.json`：采用上游 canonical Fable 5 元数据。
+3. `model_updater.go`：`mergeModelCatalog` 删除 `GeminiCLI` 字段（上游移除了 gemini-cli provider 及 `staticModelsJSON.GeminiCLI`），否则编译失败。
+4. `usage_helpers_test.go`：保留本地 Claude cache-token 测试（fork 优化）；上游重构后 `ParseGeminiCLI*` 函数消失，将可平滑映射的测试重指向 `ParseGeminiUsage`/`ParseGeminiStreamUsage`；删除 traffic-only guard 测试（上游移除了 `hasGeminiFamilyUsageTokenFields`，行为不再保证）。
+
+**完整 TDD**：新增 `model_definitions_fable_test.go`——验证 `WithClaudeBuiltins` 始终注入 Fable 5（fork 优化的保障），并强制 builtin 与 `models.json` 元数据一致。已做 red→green 验证（临时把 builtin `created` 改回 `1781193600` → 一致性测试 red；恢复 → green）。
+
+**验证**：
+- `go build ./cmd/server` — 通过
+- `go vet ./...` — 仅剩 pre-existing 警告（`request_logger.go` WriteTo 签名、pluginhost、sdk handlers，已确认上游与 fork 备份均存在）
+- `go test ./...` — 唯一失败的 4 个测试（Codex image-edit ×2、XAI reasoning-effort、Gemini reasoning-signature）经独立 worktree 验证在 clean `upstream/main` 上同样失败，非本次 merge 引入
+
+**Commit**：`9a50fd6a merge: sync with upstream/main (172 commits)`（parents `f4ffea6d` + `369e560f`）。
