@@ -38,7 +38,9 @@
 | `new` | 本地主开发分支 |
 | `ironbox/new-v7` | 远端发布分支，与 `new` 保持同步 |
 | `upstream/main` | 上游主线，定期 rebase |
-| `backup/*` | rebase 前的备份，命名格式 `backup/new-pre-*-YYYYMMDD-HHMMSS` |
+| `backup/*` | merge/rebase 前的备份，命名格式 `backup/new-pre-*-YYYYMMDD-HHMMSS`；最新备份：`backup/new-pre-rebase-20260621-144654` |
+
+> 2026-06-21 起改用 merge（而非 rebase）同步上游，保留双方提交历史。推送方式为 fast-forward，无需 force push。
 
 ## 远程环境
 
