@@ -357,6 +357,8 @@ func (a *Auth) indexSeed() string {
 			apiPrefix = "openai-compatibility"
 		case strings.EqualFold(provider, "gemini"):
 			apiPrefix = "gemini-api-key"
+		case strings.EqualFold(provider, "gemini-interactions"):
+			apiPrefix = "interactions-api-key"
 		case strings.EqualFold(provider, "codex"):
 			apiPrefix = "codex-api-key"
 		case strings.EqualFold(provider, "claude"):
@@ -379,8 +381,10 @@ func (a *Auth) EnsureIndex() string {
 	if a == nil {
 		return ""
 	}
-	if a.indexAssigned && a.Index != "" {
-		return a.Index
+	if existingIndex := strings.TrimSpace(a.Index); existingIndex != "" {
+		a.Index = existingIndex
+		a.indexAssigned = true
+		return existingIndex
 	}
 
 	seed := a.indexSeed()
@@ -557,22 +561,25 @@ func (a *Auth) AccountInfo() (string, string) {
 	if a == nil {
 		return "", ""
 	}
-	// Check metadata for email first (OAuth-style auth)
-	if a.Metadata != nil {
-		if v, ok := a.Metadata["email"].(string); ok {
-			email := strings.TrimSpace(v)
-			if email != "" {
-				return "oauth", email
+	switch a.AuthKind() {
+	case AuthKindOAuth:
+		if a.Metadata != nil {
+			if v, ok := a.Metadata["email"].(string); ok {
+				email := strings.TrimSpace(v)
+				if email != "" {
+					return "oauth", email
+				}
 			}
 		}
-	}
-	// Fall back to API key (API-key auth)
-	if a.Attributes != nil {
-		if v := a.Attributes["api_key"]; v != "" {
-			return "api_key", v
+		return "oauth", ""
+	case AuthKindAPIKey:
+		if apiKey := authAttribute(a, AttributeAPIKey); apiKey != "" {
+			return "api_key", apiKey
 		}
+		return "api_key", ""
+	default:
+		return "", ""
 	}
-	return "", ""
 }
 
 // ExpirationTime attempts to extract the credential expiration timestamp from metadata.
