@@ -38,3 +38,21 @@
 7. Push `new` → `ironbox/new` 和 `ironbox/new-v7`（fast-forward，无需 force）
 
 **状态**：已完成
+
+---
+
+## Plan 3: Merge 上游同步（2026-07-10）
+
+**目标**：将 `upstream/main`（107 个新提交，`v7.2.26` → `v7.2.58`）merge 进本地 `new` 分支。
+
+**步骤**：
+
+1. 创建备份分支 `backup/new-pre-merge-20260710`
+2. 执行 `git merge upstream/main`
+3. 解决 1 处冲突：`internal/runtime/executor/helps/usage_helpers_test.go`（本地 8 个 Gemini/Claude cache-token 测试 vs 上游 3 个 Interactions 测试，diff3 对齐错误导致 HEAD 侧收尾丢失，手工补全）
+4. 验证：`go build` 通过；`go vet` 与 clean upstream/main 完全一致（无新增警告）；`go test ./...` 仅 1 个预存失败（`TestModelsWithClientVersionReturnsCodexCatalog`，已在 clean upstream/main 独立 worktree 验证同样失败）
+5. `/code-review` + `/simplify` 复核冲突解决文件，无发现
+6. Push `new` → `ironbox/new` 和 `ironbox/new-v7`
+
+**状态**：已完成
+**状态**：已完成

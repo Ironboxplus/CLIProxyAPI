@@ -105,3 +105,24 @@
 - `go test ./...` — 唯一失败的 4 个测试（Codex image-edit ×2、XAI reasoning-effort、Gemini reasoning-signature）经独立 worktree 验证在 clean `upstream/main` 上同样失败，非本次 merge 引入
 
 **Commit**：`9a50fd6a merge: sync with upstream/main (172 commits)`（parents `f4ffea6d` + `369e560f`）。
+
+---
+
+## 2026-07-10
+
+### Merge 上游同步（107 个 commit）
+
+**背景**：`new` 落后 `upstream/main` 107 个 commit（上次合并点 2026-06-21，merge-base 约 `v7.2.26`），上游已推进到 `v7.2.58`。主要变更：GPT-5.6 模型注册与调整（Sol 一度被移除又确认为 bug 后照常合入）、Grok 4.5、model header overrides、跨 family thinking level clamping、Claude 模型 ID 前缀处理、`invalid_grant` 重试挂起、团队级 plan 凭证覆盖保护、quota backoff jitter、Google Interactions 支持、safe mode / WebsocketAuth 默认值调整等。
+
+**操作**：
+1. 建立备份分支 `backup/new-pre-merge-20260710`
+2. `git merge upstream/main`，遇到 1 处冲突：`internal/runtime/executor/helps/usage_helpers_test.go`
+   - 冲突原因：本地新增 8 个 Gemini/Claude cache-token 测试与上游新增 3 个 Interactions 测试插入在同一位置，git diff3 未能正确对齐两侧的函数收尾（HEAD 侧 `TestParseClaudeStreamUsage_IncludesCachedInInput` 的 `t.Fatalf` + 收尾大括号被错误地并入 upstream 侧内容）
+   - 解决方式：手工补全 HEAD 侧缺失的收尾行，保留双方全部 12 个新测试函数，逐一显式 `go test -run` 验证全部通过
+3. 验证：
+   - `go build ./cmd/server` — 通过
+   - `go vet ./...` — 与 clean `upstream/main` 上完全一致的预存警告（`request_logger.go` WriteTo 签名、pluginhost context leak ×2、unsafe.Pointer ×7、`handlers.go` unreachable code），未新增
+   - `go test ./...` — 唯一失败 `TestModelsWithClientVersionReturnsCodexCatalog`（custom priority 143 vs 129），经独立 worktree 验证在 clean `upstream/main` 上同样失败，非本次合并引入
+4. `/code-review` + `/simplify` 复核冲突解决文件：无发现（12 个新测试函数逐一显式跑通，风格与文件内其余 31 个测试函数一致，无需表驱动重构）
+
+**Commit**：`6a958e2f Merge remote-tracking branch 'upstream/main' into new`
