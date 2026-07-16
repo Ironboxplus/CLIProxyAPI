@@ -5,13 +5,14 @@
 // Encoding detection (Spec section 3)
 //
 // Claude signatures use base64 encoding in one or two layers. The raw string's
-// first character determines the encoding depth. This is mathematically
-// equivalent to the spec's "decode first, check byte" approach:
+// prefix determines the encoding and envelope shape:
 //
 //   - E prefix: single-layer, payload[0] == 0x12, first 6 bits = 000100,
 //     base64 index 4 = E.
 //   - R prefix: double-layer, inner[0] == E (0x45), first 6 bits = 010001,
 //     base64 index 17 = R.
+//   - CAIS prefix: versioned single-layer envelope beginning with protobuf
+//     fields 1=2 and 2=<container>.
 //
 // Valid signatures can be normalized to R-form (double-layer base64) before
 // sending to the Antigravity backend.
@@ -111,12 +112,16 @@ func IsValidClaudeThinkingSignature(rawSignature string, opts ...ClaudeSignature
 	if opt.Base64Only {
 		return HasDecodableClaudeThinkingSignature(rawSignature)
 	}
+	sig := stripClaudeSignaturePrefix(rawSignature)
+	if strings.HasPrefix(sig, "CAIS") {
+		return validateClaudeVersionedSignature(sig, opt) == nil
+	}
 	_, err := NormalizeClaudeThinkingSignature(rawSignature, opts...)
 	return err == nil
 }
 
-// HasDecodableClaudeThinkingSignature reports whether rawSignature has the
-// Claude E/R shape and its expected base64 layer(s) can be decoded.
+// HasDecodableClaudeThinkingSignature reports whether rawSignature has a
+// supported Claude shape and its expected base64 layer(s) can be decoded.
 func HasDecodableClaudeThinkingSignature(rawSignature string) bool {
 	sig := stripClaudeSignaturePrefix(rawSignature)
 	if sig == "" || len(sig) > MaxClaudeThinkingSignatureLen {
@@ -134,19 +139,25 @@ func HasDecodableClaudeThinkingSignature(rawSignature string) bool {
 		}
 		innerDecoded, err := base64.StdEncoding.DecodeString(string(decoded))
 		return err == nil && len(innerDecoded) > 0
+	case 'C':
+		if !strings.HasPrefix(sig, "CAIS") {
+			return false
+		}
+		decoded, err := base64.StdEncoding.DecodeString(sig)
+		return err == nil && validateClaudeVersionedEnvelope(decoded) == nil
 	default:
 		return false
 	}
 }
 
-// HasClaudeThinkingSignaturePrefix reports whether rawSignature has the Claude
-// E/R signature prefix after stripping an optional cache prefix.
+// HasClaudeThinkingSignaturePrefix reports whether rawSignature has a supported
+// Claude signature prefix after stripping an optional cache prefix.
 func HasClaudeThinkingSignaturePrefix(rawSignature string) bool {
 	sig := stripClaudeSignaturePrefix(rawSignature)
 	if sig == "" {
 		return false
 	}
-	return sig[0] == 'E' || sig[0] == 'R'
+	return sig[0] == 'E' || sig[0] == 'R' || strings.HasPrefix(sig, "CAIS")
 }
 
 func stripClaudeSignaturePrefix(rawSignature string) string {
@@ -255,9 +266,89 @@ func NormalizeClaudeProviderNativeThinkingSignature(rawSignature string, opts ..
 			return "", fmt.Errorf("invalid double-layer signature: base64 decode failed: %w", err)
 		}
 		return string(decoded), nil
+	case 'C':
+		if !strings.HasPrefix(sig, "CAIS") {
+			return "", fmt.Errorf("invalid signature: unsupported C-prefixed envelope")
+		}
+		if err := validateClaudeVersionedSignature(sig, opt); err != nil {
+			return "", err
+		}
+		return sig, nil
 	default:
-		return "", fmt.Errorf("invalid signature: expected 'E' or 'R' prefix, got %q", string(sig[0]))
+		return "", fmt.Errorf("invalid signature: expected 'E', 'R', or 'CAIS' prefix, got %q", string(sig[0]))
 	}
+}
+
+func validateClaudeVersionedSignature(sig string, opt ClaudeSignatureValidationOptions) error {
+	decoded, err := base64.StdEncoding.DecodeString(sig)
+	if err != nil {
+		return fmt.Errorf("invalid versioned signature: base64 decode failed: %w", err)
+	}
+	if err = validateClaudeVersionedEnvelope(decoded); err != nil {
+		return err
+	}
+	if !opt.Strict {
+		return nil
+	}
+	_, err = InspectClaudeSignaturePayload(decoded, 1)
+	return err
+}
+
+func validateClaudeVersionedEnvelope(payload []byte) error {
+	if len(payload) == 0 {
+		return fmt.Errorf("invalid versioned Claude signature: empty payload")
+	}
+	var version uint64
+	var status uint64
+	haveVersion := false
+	haveContainer := false
+	haveStatus := false
+	err := walkClaudeProtobufFields(payload, func(num protowire.Number, typ protowire.Type, raw []byte) error {
+		switch num {
+		case 1:
+			if typ != protowire.VarintType {
+				return fmt.Errorf("invalid versioned Claude signature: field 1 must be varint")
+			}
+			value, errDecode := decodeClaudeVarintField(raw, "versioned Claude field 1")
+			if errDecode != nil {
+				return errDecode
+			}
+			version = value
+			haveVersion = true
+		case 2:
+			if typ != protowire.BytesType {
+				return fmt.Errorf("invalid versioned Claude signature: field 2 must be bytes")
+			}
+			if _, errDecode := decodeClaudeBytesField(raw, "versioned Claude field 2"); errDecode != nil {
+				return errDecode
+			}
+			haveContainer = true
+		case 3:
+			if typ != protowire.VarintType {
+				return fmt.Errorf("invalid versioned Claude signature: field 3 must be varint")
+			}
+			value, errDecode := decodeClaudeVarintField(raw, "versioned Claude field 3")
+			if errDecode != nil {
+				return errDecode
+			}
+			status = value
+			haveStatus = true
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if !haveVersion || version != 2 {
+		return fmt.Errorf("invalid versioned Claude signature: expected field 1 version 2")
+	}
+	if !haveContainer {
+		return fmt.Errorf("invalid versioned Claude signature: missing field 2 container")
+	}
+	if !haveStatus || status != 1 {
+		return fmt.Errorf("invalid versioned Claude signature: expected field 3 status 1")
+	}
+	return nil
 }
 
 func validateClaudeDoubleLayerSignature(sig string, opt ClaudeSignatureValidationOptions) error {
@@ -336,7 +427,9 @@ func InspectClaudeSignaturePayload(payload []byte, encodingLayers int) (*ClaudeS
 		return nil, fmt.Errorf("invalid Claude signature: empty payload")
 	}
 	if payload[0] != 0x12 {
-		return nil, fmt.Errorf("invalid Claude signature: expected first byte 0x12, got 0x%02x", payload[0])
+		if err := validateClaudeVersionedEnvelope(payload); err != nil {
+			return nil, fmt.Errorf("invalid Claude signature envelope: %w", err)
+		}
 	}
 	container, err := extractClaudeBytesField(payload, 2, "top-level protobuf")
 	if err != nil {

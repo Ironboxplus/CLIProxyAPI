@@ -30,6 +30,118 @@ func testClaudeThinkingSignature() string {
 	return base64.StdEncoding.EncodeToString(payload)
 }
 
+func testClaudeVersionedThinkingSignature() string {
+	channelBlock := []byte{}
+	channelBlock = protowire.AppendTag(channelBlock, 1, protowire.VarintType)
+	channelBlock = protowire.AppendVarint(channelBlock, 15)
+	channelBlock = protowire.AppendTag(channelBlock, 3, protowire.VarintType)
+	channelBlock = protowire.AppendVarint(channelBlock, 2)
+	channelBlock = protowire.AppendTag(channelBlock, 5, protowire.BytesType)
+	channelBlock = protowire.AppendBytes(channelBlock, make([]byte, 64))
+	channelBlock = protowire.AppendTag(channelBlock, 6, protowire.BytesType)
+	channelBlock = protowire.AppendString(channelBlock, "claude-fable-5")
+	channelBlock = protowire.AppendTag(channelBlock, 7, protowire.VarintType)
+	channelBlock = protowire.AppendVarint(channelBlock, 1)
+
+	container := []byte{}
+	container = protowire.AppendTag(container, 1, protowire.BytesType)
+	container = protowire.AppendBytes(container, channelBlock)
+	container = protowire.AppendTag(container, 2, protowire.BytesType)
+	container = protowire.AppendBytes(container, make([]byte, 12))
+	container = protowire.AppendTag(container, 3, protowire.BytesType)
+	container = protowire.AppendBytes(container, make([]byte, 12))
+	container = protowire.AppendTag(container, 4, protowire.BytesType)
+	container = protowire.AppendBytes(container, make([]byte, 48))
+
+	payload := []byte{}
+	payload = protowire.AppendTag(payload, 1, protowire.VarintType)
+	payload = protowire.AppendVarint(payload, 2)
+	payload = protowire.AppendTag(payload, 2, protowire.BytesType)
+	payload = protowire.AppendBytes(payload, container)
+	payload = protowire.AppendTag(payload, 3, protowire.VarintType)
+	payload = protowire.AppendVarint(payload, 1)
+	return base64.StdEncoding.EncodeToString(payload)
+}
+
+func TestDetectSignatureProvider_RecognizesClaudeVersionedSignature(t *testing.T) {
+	sig := testClaudeVersionedThinkingSignature()
+	if !strings.HasPrefix(sig, "CAIS") {
+		t.Fatalf("versioned Claude signature prefix = %q, want CAIS", sig[:4])
+	}
+	if got := DetectSignatureProvider(sig); got != SignatureProviderClaude {
+		t.Fatalf("DetectSignatureProvider(versioned Claude) = %q, want %q", got, SignatureProviderClaude)
+	}
+	normalized, ok := CompatibleSignatureForProvider(SignatureProviderClaude, sig)
+	if !ok || normalized != sig {
+		t.Fatalf("CompatibleSignatureForProvider(Claude) = %q, %v; want unchanged signature", normalized, ok)
+	}
+}
+
+func TestSanitizeClaudeMessagesForClaudeUpstream_PreservesVersionedThinkingOnlyAssistantAfterSystem(t *testing.T) {
+	sig := testClaudeVersionedThinkingSignature()
+	input := []byte(`{"model":"claude-fable-5","messages":[` +
+		`{"role":"system","content":"mid-conversation directive"},` +
+		`{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"` + sig + `"}]},` +
+		`{"role":"user","content":"continue"}]}`)
+
+	output, report := SanitizeClaudeMessagesForClaudeUpstream(input, "claude-fable-5")
+	messages := gjson.GetBytes(output, "messages").Array()
+	if len(messages) != 3 {
+		t.Fatalf("messages length = %d, want 3: %s; report=%+v", len(messages), output, report)
+	}
+	if got := messages[1].Get("role").String(); got != "assistant" {
+		t.Fatalf("messages[1].role = %q, want assistant: %s", got, output)
+	}
+	if got := messages[1].Get("content.0.signature").String(); got != sig {
+		t.Fatal("versioned Claude signature changed or disappeared")
+	}
+	if report.Preserved != 1 || report.DroppedBlocks != 0 {
+		t.Fatalf("unexpected sanitize report: %+v", report)
+	}
+}
+
+func TestSanitizeClaudeMessagesForClaudeUpstream_DropsOrphanedSystemWithIncompatibleThinkingOnlyAssistant(t *testing.T) {
+	input := []byte(`{"model":"claude-fable-5","messages":[` +
+		`{"role":"system","content":"directive for removed assistant"},` +
+		`{"role":"assistant","content":[{"type":"thinking","thinking":"foreign","signature":"gAAAAABopenai-encrypted-content"}]},` +
+		`{"role":"user","content":"continue"}]}`)
+
+	output, report := SanitizeClaudeMessagesForClaudeUpstream(input, "claude-fable-5")
+	messages := gjson.GetBytes(output, "messages").Array()
+	if len(messages) != 1 || messages[0].Get("role").String() != "user" {
+		t.Fatalf("orphaned system was not removed with the empty assistant: %s; report=%+v", output, report)
+	}
+	if report.DroppedBlocks != 1 {
+		t.Fatalf("DroppedBlocks = %d, want 1; report=%+v", report.DroppedBlocks, report)
+	}
+}
+
+func TestSanitizeClaudeMessagesForClaudeUpstream_PreservesDirectiveOnlySystemWhenAssistantIsRemoved(t *testing.T) {
+	input := []byte(`{"model":"claude-fable-5","messages":[` +
+		`{"role":"system","content":[],"output_config":{"effort":"high"}},` +
+		`{"role":"assistant","content":[{"type":"thinking","thinking":"foreign","signature":"gAAAAABopenai-encrypted-content"}]},` +
+		`{"role":"user","content":"continue"}]}`)
+
+	output, _ := SanitizeClaudeMessagesForClaudeUpstream(input, "claude-fable-5")
+	messages := gjson.GetBytes(output, "messages").Array()
+	if len(messages) != 2 {
+		t.Fatalf("messages length = %d, want directive system and user: %s", len(messages), output)
+	}
+	if messages[0].Get("role").String() != "system" || !messages[0].Get("output_config").Exists() {
+		t.Fatalf("directive-only system was not preserved: %s", output)
+	}
+}
+
+func TestDetectSignatureProvider_RejectsMalformedClaudeVersionedSignature(t *testing.T) {
+	malformed := base64.StdEncoding.EncodeToString([]byte{0x08, 0x02, 0x12, 0x01, 0xff})
+	if !strings.HasPrefix(malformed, "CAI") {
+		t.Fatalf("test signature prefix = %q, want CAI", malformed[:3])
+	}
+	if got := DetectSignatureProvider(malformed); got != SignatureProviderUnknown {
+		t.Fatalf("DetectSignatureProvider(malformed versioned signature) = %q, want %q", got, SignatureProviderUnknown)
+	}
+}
+
 func TestDetectSignatureProvider_UsesProviderPrefix(t *testing.T) {
 	claudeSig := "claude#" + testClaudeThinkingSignature()
 	if got := DetectSignatureProvider(claudeSig); got != SignatureProviderClaude {

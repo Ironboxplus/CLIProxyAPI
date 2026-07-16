@@ -157,6 +157,12 @@ func SanitizeClaudeMessagesSignaturesForTarget(payload []byte, opts ClaudeMessag
 		if messageModified {
 			modified = true
 			if len(keptParts) == 0 && opts.DropEmptyMessages {
+				if message.Get("role").String() == "assistant" && len(keptMessages) > 0 {
+					previous := gjson.Parse(keptMessages[len(keptMessages)-1])
+					if previous.Get("role").String() == "system" && !isClaudeDirectiveOnlySystem(previous) {
+						keptMessages = keptMessages[:len(keptMessages)-1]
+					}
+				}
 				continue
 			}
 			updated, _ := sjson.SetRaw(message.Raw, "content", "["+strings.Join(keptParts, ",")+"]")
@@ -172,6 +178,11 @@ func SanitizeClaudeMessagesSignaturesForTarget(payload []byte, opts ClaudeMessag
 	}
 	output, _ := sjson.SetRawBytes(payload, "messages", []byte("["+strings.Join(keptMessages, ",")+"]"))
 	return output, report
+}
+
+func isClaudeDirectiveOnlySystem(message gjson.Result) bool {
+	content := message.Get("content")
+	return content.IsArray() && len(content.Array()) == 0 && message.Get("output_config").Exists()
 }
 
 func stripClaudeToolUseSignatureFields(part gjson.Result) (string, bool) {
